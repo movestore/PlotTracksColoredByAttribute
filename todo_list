@@ -1,0 +1,39 @@
+##new to do list for app "Plot Tracks Colored By Attribute":
+
+1-color the tracks by the values if a selected attribute by the user
+2-make it possible to color by 2 attributes, eg color by speed and sex. One idea would be e.g. to use shades of green to represents the speeds of males, shares of red for females and shades of blue for unknown/undefined. Or if it is speed and trackID, than each trackID gets the shades of another color.
+3-distinguish between categorical and continuous attributes when choosing the color scale
+4-offer the user the possibility to choose among several color palette options
+5-add options for background maps (OSM, stadia, leaflet, etc)
+6-offer options to chose point symbol, line type, size, alpha. Not all options might be needed, giving to many options might be overwhelming, but some that make sense is good
+7-keep the possibility to visualize all tracks on one map, or each track on a single map.
+8-make it easier to select/unselect all individuals at once
+9-make the maps interactive (user can zoom in and out ideally with the mouse)
+10-provide the possibility to download the visualization as a png, html, etc, for the user to included in reports, manuscripts, presentations, etc and any other feature that seems useful that comes up on the way
+
+new to do list for app "Plot Tracks Colored By Attribute":
+
+1-color the tracks by the values if a selected attribute by the user
+2-make it possible to color by 2 attributes, eg color by speed and sex. One idea would be e.g. to use shades of green to represents the speeds of males, shares of red for females and shades of blue for unknown/undefined. Or if it is speed and trackID, than each trackID gets the shades of another color.
+3-distinguish between categorical and continuous attributes when choosing the color scale
+4-offer the user the possibility to choose among several color palette options
+5-add options for background maps (OSM, stadia, leaflet, etc)
+6-offer options to chose point symbol, line type, size, alpha. Not all options might be needed, giving to many options might be overwhelming, but some that make sense is good
+7-keep the possibility to visualize all tracks on one map, or each track on a single map.
+8-make it easier to select/unselect all individuals at once
+9-make the maps interactive (user can zoom in and out ideally with the mouse)
+10-provide the possibility to download the visualization as a png, html, etc, for the user to included in reports, manuscripts, presentations, etc and any other feature that seems useful that comes up on the way
+
+##other suggestions from "to do list" in code:
+
+11-give option to only display one individual, ie, when another is selected, the previous one is unselected
+12-make multipanel with aspect ratio==1, look into cowplot pkg
+13- bug fix: when a single individual is plotted the legendcode does not appear
+14-Add the results to the MoveStack. For example, add something like an attribute 'color' containing the hexadecimal code for the color and an attribute 'color-legend' containing the value used to define the color. This would allow the results to be saved as an RDS or passed on to a subsequent app to create a shapefile, kml, etc.
+15-ckeck tmap and mapview
+
+##users requests:
+
+16-assign unique color for each individual and differentiate by species 
+17-wrap/integrate functionality into the existing Leaflet Map app (or provide a tmap/mapview-based version within MoveApps)
+18-implement a color-reuse strategy for 100+ individuals (reuse non-adjacent colors to avoid confusion)
