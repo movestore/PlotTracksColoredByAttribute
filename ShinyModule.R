@@ -1,255 +1,257 @@
 library(shiny)
-library(move)
-library(ggplot2)
-library(shinyWidgets)
-library(colourpicker)
-library(htmltools)
-library(ggforce)
-library(units)
-library(lubridate)
-library(rnaturalearth)
+library(move2)
 library(sf)
-# library(cowplot)
-
-## ToDo?: 
-# make it possible to change linesize
-# give possibility to select/unselect all individuals with one click
-# give option to only display one individual, ie, when another is selected, the previous one is unselected
-# if variable is factor, give color palette options?
-# make multipanel with aspect ratio==1, look into cowplot pkg
-# add costline, or something that may give orientation on where the tracks are DONE!
-# when a single individual is plotted the legendcode does not appear !?
-
-## Sarahs suggestions:
-# Add the results to the MoveStack. For example, add something like an attribute 'color' containing the hexadecimal code for the color and an attribute 'color-legend' containing the value used to define the color. This would allow the results to be saved as an RDS or passed on to a subsequent app to create a shapefile, kml, etc.
-# Provide color ramps for categories
-# One part of her request was to be able to distinguish both individual tracks + the attribute of interest. She said when they have maps with 100+ animals, they use different color ramps (e.g., blues and reds). Even though colors are reused, if they are not adjacent it is still effective. I also though of exploring the possibility of coloring by 2 different attributes.
-# Offer some standard background map options.
-# Offer a points option with different symbols. dropdown to choose pch symbols and define color/line/alpha/size
-# a select/unselect all (indiv) would be helpful.
-# ckeck tmap and mapview
+library(dplyr)
+library(leaflet)
+library(RColorBrewer)
+library(pals)
 
 
-shinyModuleUserInterface <- function(id, label) {
-  ns <- NS(id)
+my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
+
+# ---- helpers ----
+
+## helper 1 : making segments #####
+make_segments <- function(mv, attr_name) {
+  if (nrow(mv) < 2) return(sf::st_sf(value = numeric(0), geometry = sf::st_sfc(crs = 4326)))
   
-  tagList(
-    titlePanel("Plot track(s) colored by attribute"),
-    fluidRow(
-      column(3,uiOutput(ns('uiAttributeL'))),
-      column(3,selectInput(ns("panels"), "Choose display mode", choices=c("Single panel","Multipanel"), selected="Single panel", multiple=F)),
-      column(2,colourInput(ns("colmin"), "Select colour: low", "blue")),
-      column(2,colourInput(ns("colmid"), "mid", "yellow")),
-      column(2,colourInput(ns("colmax"), "high", "red"))),
-    uiOutput(ns('uiIndivL')),
-    # actionButton(ns("selectall"), label="Select/Deselect all individuals"),
-    span(#textOutput(ns("warningtext")),
-         plotOutput(ns("plot"), dblclick = ns("plot_dblclick"), brush = brushOpts(id =ns("plot_brush"),resetOnNew = TRUE), height = "65vh"), style="color:red"), 
-    fluidRow(
-      # column(2,numericInput(ns("linesize"), "Width of line in mm", value=0.5, min = 0.1, max = 10, step=0.1)), # does not work for now
-      column(2, style = "margin-top: 25px;", downloadButton(ns('savePlot'), 'Save Plot')),
-      column(3,style = "margin-top: 15px;",helpText("OPTIONAL: save plot with personalized width and height:",style="color:black;font-style: italic"),offset=3),
-      column(2, numericInput(ns("widthmm"), "Width (mm)", value=NA), style = "font-size: 12px; font-style: italic"),
-      column(2, numericInput(ns("heightmm"), "Height (mm)", value=NA),style = "font-size: 12px; font-style: italic"),#
+  # order, drop exact duplicate (id,time), drop  missing 
+  dd <- sf::st_drop_geometry(mv) |> as.data.frame()
+  coords <- sf::st_coordinates(mv)
+  tib <- tibble::tibble(
+    id = as.character(mt_track_id(mv)),
+    t  = mt_time(mv),
+    x  = coords[,1],
+    y  = coords[,2],
+    a  = dd[[attr_name]]
+  ) |>
+    arrange(id, t) |>
+    distinct(id, t, .keep_all = TRUE) |>
+    filter(!is.na(x), !is.na(y))
+  
+  if (nrow(tib) < 2) return(sf::st_sf(value = numeric(0), geometry = sf::st_sfc(crs = 4326)))
+  
+  # lead rows within id to make segments
+  segdf <- tib |>
+    group_by(id) |>
+    mutate(x2 = lead(x), y2 = lead(y), a2 = lead(a)) |>
+    filter(!is.na(x2), !is.na(y2)) |>
+    ungroup()
+  
+  if (nrow(segdf) == 0) return(sf::st_sf(value = numeric(0), geometry = sf::st_sfc(crs = 4326)))
+  
+  # value per segment: numeric/units -> midpoint; else start value
+  seg_val <- if (is.numeric(segdf$a) || inherits(segdf$a, "units")) {
+    (as.numeric(segdf$a) + as.numeric(segdf$a2)) / 2
+  } else {
+    as.character(segdf$a)
+  }
+  
+  geoms <- lapply(seq_len(nrow(segdf)), function(i) {
+    sf::st_linestring(matrix(c(segdf$x[i], segdf$y[i], segdf$x2[i], segdf$y2[i]), ncol = 2, byrow = TRUE))
+  })
+  
+  sf::st_sf(
+    id = segdf$id,
+    value = seg_val,
+    geometry = sf::st_sfc(geoms, crs = sf::st_crs(mv))
+  )
+}
+
+## helper 2: line format #####
+line_type <- function(x) {
+  switch(x,
+         "solid"    = NULL,      
+         "dashed"   = "10,10",
+         "dotted"   = "2,8",
+         "dotdash"  = "10,6,2,6",
+         "longdash" = "20,10",
+         "twodash"  = "15,8,5,8",
+         NULL
+  )
+}
+
+
+
+# ---- UI ----
+ui <- fluidPage(
+  titlePanel("Tracks colored by attribute"),
+  sidebarLayout(
+    sidebarPanel(width = 4,
+                 h4("Animals"),
+                 fluidRow(
+                   column(8,checkboxGroupInput("animals", NULL, choices = NULL)),        
+                   column(4, actionButton("select_all_animals", "Select All",  class = "btn-sm"),actionButton("unselect_animals",  "Unselect All", class = "btn-sm"))
+                 ),
+                 
+                 checkboxGroupInput("animals", NULL, choices = NULL),
+                 hr(),
+                 h4("Attribute"),
+                 selectInput("attr", NULL, choices = NULL),
+                 div(id = "attr-type-msg", tags$small(textOutput("attr_info"), style = "color:darkblue;")),
+                 h4("Colors"),
+                 uiOutput("ui_color_controls"),   
+                 hr(),
+                 
+                 h4("Style"),
+                 fluidRow(
+                   column(4, selectInput("linetype_att","Line type",choices = c("solid","dashed","dotted","dotdash","longdash","twodash"), selected = "solid" )),
+                   column(4, numericInput("linesize_att", "Line width", 3, min = 1, max = 10, step = 1)), 
+                   column(4, sliderInput("linealpha_att", "Line alpha", min = 0, max = 1, value = 0.9, step = 0.05)) 
+                   
+                 ),
+                 
+    ),
+    mainPanel(
+      leafletOutput("map", height = "85vh")
     )
   )
-}
+)
 
-shinyModule <- function(input, output, session, data) {
-  ns <- session$ns
-  current <- reactiveVal(data)
-  output$uiAttributeL <- renderUI({
-    dataCC <- data@data[, colSums(is.na(data@data)) != nrow(data@data)] ## maybe look for a more effective way of doing this in case data set is very large
-    dataCC <- dataCC[, sapply(dataCC, is.POSIXt) != TRUE] ## removing timestamp columns as these cannot be currently plotted
-    dataCC <- dataCC[, sapply(dataCC, class) != "Date"]
-    selectInput(ns("attributeL"), "Select attribute", choices=colnames(dataCC))})
+########## server######
+
+server <- function(input, output, session) {
   
-  output$uiIndivL <- renderUI({
-    # checkboxGroupInput(ns("indivL"), "Select individuals", choices=namesIndiv(data), selected=namesIndiv(data)[1], inline=TRUE)
-    checkboxGroupButtons(ns("indivL"), "Select individuals", size="sm", choices=namesIndiv(data), selected=namesIndiv(data)[1],status="default",checkIcon = list(
-      # yes = icon("check-square"), no = icon("square-o")))
-      yes = icon("ok",lib = "glyphicon"))) #, no = icon("remove",lib = "glyphicon")
+  
+  # keep tracks with at least 2 
+  mv_all <- reactive({
+    my_data %>%
+      arrange(mt_track_id(), mt_time()) %>%
+      { .[!duplicated(data.frame(id = mt_track_id(.), t = mt_time(.))), ] } %>%
+      group_by(track = mt_track_id()) %>%
+      filter(n() >= 2) %>%
+      ungroup()
   })
   
-  # observeEvent(input$selectall,{
-  # observe({
-  #       updateCheckboxGroupButtons(session=session, 
-  #                                  ns("indivL"), 
-  #                                  # "Select individuals", size="sm", 
-  #                                  choices=namesIndiv(data),
-  #                                  # selected=c(namesIndiv(data))
-  #                                  selected=if (input$selectall) c(namesIndiv(data))
-  #                                  # ,status="default",checkIcon = list(yes = icon("ok",lib = "glyphicon"))
-  #                                  )
-  #     # } else {
-  #     #   updateCheckboxGroupInput(session=session, 
-  #     #                            ns("indivL"), 
-  #     #                            # "Select individuals", size="sm", 
-  #     #                            # choices=namesIndiv(data), 
-  #     #                            selected=c()
-  #     #                            # ,status="default",checkIcon = list(yes = icon("ok",lib = "glyphicon"))
-  #     #                            )
-  #     # }}
-  # })
+  observeEvent(input$select_all_animals, {
+    ids <- as.character(unique(mt_track_id(mv_all())))
+    updateCheckboxGroupInput(session, "animals", selected = ids)
+  })
   
-  ## zoom into plot
-  ranges <- reactiveValues(x = NULL, y = NULL)
-  observeEvent(input$plot_dblclick, {
-    brush <- input$plot_brush
-    if (!is.null(brush)) {
-      ranges$x_range <- c(brush$xmin, brush$xmax)
-      ranges$y_range <- c(brush$ymin, brush$ymax)
+  observeEvent(input$unselect_animals, {
+    updateCheckboxGroupInput(session, "animals", selected = character(0))
+  })
+  
+  
+  
+  observe({
+    ids <- as.character(unique(mt_track_id(mv_all())))
+    updateCheckboxGroupInput(session, "animals", choices = ids, selected = ids)
+  })
+  
+  
+  
+  observe({
+    dd <- sf::st_drop_geometry(mv_all()) |> as.data.frame()
+    keep <- colSums(!is.na(dd)) > 0
+    keep <- keep & !sapply(dd, inherits, what = "POSIXt")
+    keep <- keep & (sapply(dd, class) != "Date")
+    if (!any(keep)) keep[["track"]] <- TRUE
+    choices <- names(dd)[keep]
+    updateSelectInput(session, "attr", choices = choices, selected = choices[1])
+  })
+  
+  mv_sel <- reactive({
+    req(input$animals)
+    mv <- mv_all()
+    mv[as.character(mt_track_id(mv)) %in% input$animals, ] %>%
+      arrange(mt_track_id(), mt_time())
+  })
+  
+  ### Attribute type
+  max_level <- 10
+  attribute_type <- reactive({
+    req(input$attr)
+    dd   <- sf::st_drop_geometry(mv_sel()) |> as.data.frame()
+    vals <- dd[[input$attr]]
+    n_unique <- length(unique(stats::na.omit(vals)))
+    is_cont <- is.numeric(vals) || inherits(vals, "units") || n_unique > max_level
+    list(n_unique = n_unique, is_cont = is_cont)
+  })
+  
+  output$attr_info <- renderText({
+    req(attribute_type())
+    at <- attribute_type()
+    if (at$is_cont) {
+      paste0("selected Attribute is Continuous")
     } else {
-      ranges$x_range <- NULL
-      ranges$y_range <- NULL
+      paste0("selected Attribute is Categorical")
     }
   })
   
-  output$plot <- renderPlot({
-    world <- ne_countries(scale = "medium", returnclass = "sf")
-    
-    if(is.null(input$attributeL)){
-      mDF <- 1 #data.frame(long=coordinates(data)[,1],lat=coordinates(data)[,2],attribute=data@data[,1], indiv=trackId(data))
-    }else{
-      mDF <- data.frame(long=coordinates(data)[,1],lat=coordinates(data)[,2],attribute=data@data[,input$attributeL], indiv=trackId(data))
-      mDF <- mDF[mDF$indiv %in% c(input$indivL),]
-      
-      ## single panel      
-      if(input$panels=="Single panel"){
-        output$warningtext <- NULL
-        if(is.numeric(mDF[, "attribute"])){ 
-          minattr <- min(mDF[, "attribute"],na.rm=T)
-          maxattr <- max(mDF[, "attribute"],na.rm=T)
-          mpt <- (minattr+maxattr)/2
-          
-          if(class(mDF[, "attribute"])=="units"){ ## if attrb numeric with unit
-            ggplot(mDF) +  
-              geom_sf(data=world) +
-              geom_point(aes(x=long, y=lat), colour="black", size=0.5,shape=20)+
-              geom_path(aes(x=long, y=lat, colour=as.numeric(attribute), group=indiv))+ #, size=input$linesize
-              scale_colour_gradient2(low=input$colmin, mid=input$colmid, high=input$colmax, midpoint=as.numeric(mpt), name=paste0(input$attributeL," (",deparse_unit(mDF[, "attribute"]),")")
-                                     # , breaks=round(seq(minattr,maxattr,length.out=3),2),labels=round(seq(minattr,maxattr,length.out=3),2)
-              )+
-              labs(x ="Longitude", y = "Latitude")+ 
-              coord_sf(xlim = if(is.null(ranges$x_range)){c(min(mDF$long),max(mDF$long))}else{ranges$x_range}, ylim = if(is.null(ranges$y_range)){c(min(mDF$lat),max(mDF$lat))}else{ranges$y_range}, expand = T)+
-              theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-                    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
-          }else{ ## if attrb numeric 
-            ggplot(mDF) + 
-              geom_sf(data=world) +
-              geom_point(aes(x=long, y=lat), colour="black", size=0.5,shape=20)+
-              geom_path(aes(x=long, y=lat, colour=attribute, group=indiv))+ #, size=input$linesize
-              scale_colour_gradient2(low=input$colmin, mid=input$colmid, high=input$colmax, midpoint=mpt, name=input$attributeL
-                                     # , breaks=round(seq(minattr,maxattr,length.out=3),2),labels=round(seq(minattr,maxattr,length.out=3),2)
-              )+
-              labs(x ="Longitude", y = "Latitude")+
-              coord_sf(xlim = if(is.null(ranges$x_range)){c(min(mDF$long),max(mDF$long))}else{ranges$x_range}, ylim = if(is.null(ranges$y_range)){c(min(mDF$lat),max(mDF$lat))}else{ranges$y_range}, expand = T)+
-              theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-                    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
-          }
-          
-        }else{ ## if attrb non numeric
-          ggplot(mDF) + 
-            geom_sf(data=world) +
-            geom_point(aes(x=long, y=lat), colour="black", size=0.5,shape=20)+
-            geom_path(aes(x=long, y=lat, colour=attribute, group=indiv))+ #, size=input$linesize
-            # scale_color_discrete(name=input$attributeL)+
-            scale_colour_manual(values = rainbow(length(unique(mDF$attribute))),name=input$attributeL)+
-            # coord_fixed()+
-            labs(x ="Longitude", y = "Latitude")+ 
-            coord_sf(xlim = if(is.null(ranges$x_range)){c(min(mDF$long),max(mDF$long))}else{ranges$x_range}, ylim = if(is.null(ranges$y_range)){c(min(mDF$lat),max(mDF$lat))}else{ranges$y_range}, expand = T)+
-            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-                  panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
-        }
-        ## multipanel        
-      }else if(input$panels=="Multipanel"){
-        # output$warningtext <- renderText({"WARNING: Aspect ratio of plots is distorted and not 1/1"})
-        if(nrow(mDF)==0){ ## if plot is empty
-          ggplot(mDF)+labs( x ="Longitude", y = "Latitude")+ #title=input$attributeL,
-            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-                  panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
-        }else{
-          if(is.numeric(mDF[, "attribute"])){ 
-            minattr <- min(mDF[, "attribute"],na.rm=T)
-            maxattr <- max(mDF[, "attribute"],na.rm=T)
-            mpt <- (minattr+maxattr)/2
-            if(class(mDF[, "attribute"])=="units"){ ## attrb is nummeric and has units
-              ggplot(mDF) + 
-                geom_sf(data=world) +
-                geom_point(aes(x=long, y=lat), colour="black", size=0.5,shape=20)+
-                geom_path(aes(x=long, y=lat, colour=as.numeric(attribute), group=indiv))+ #, size=input$linesize
-                # facet_wrap(~indiv, scales="free")+
-                facet_wrap(~indiv)+
-                scale_colour_gradient2(low=input$colmin, mid=input$colmid, high=input$colmax, midpoint=as.numeric(mpt), name=paste0(input$attributeL," (",deparse_unit(mDF[, "attribute"]),")")
-                                       # , breaks=round(seq(minattr,maxattr,length.out=3),2),labels=round(seq(minattr,maxattr,length.out=3),2)
-                )+
-                # coord_fixed()+
-                labs( x ="Longitude", y = "Latitude")+ #title=input$attributeL,
-                coord_sf(xlim = if(is.null(ranges$x_range)){c(min(mDF$long),max(mDF$long))}else{ranges$x_range}, ylim = if(is.null(ranges$y_range)){c(min(mDF$lat),max(mDF$lat))}else{ranges$y_range}, expand = T)+
-                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-                      panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
-            }else{ ## attrb is numeric
-              ggplot(mDF) +
-                geom_sf(data=world) +
-                geom_point(aes(x=long, y=lat), colour="black", size=0.5,shape=20)+
-                geom_path(aes(x=long, y=lat, colour=attribute, group=indiv))+ #, size=input$linesize
-                # facet_wrap(~indiv, scales="free")+
-                facet_wrap(~indiv)+
-                scale_colour_gradient2(low=input$colmin, mid=input$colmid, high=input$colmax, midpoint=mpt, name=input$attributeL
-                                       # , breaks=round(seq(minattr,maxattr,length.out=3),2),labels=round(seq(minattr,maxattr,length.out=3),2)
-                )+
-                # coord_fixed()+
-                labs( x ="Longitude", y = "Latitude")+
-                # coord_cartesian(xlim = ranges$x_range, ylim = ranges$y_range, expand = T)+
-                coord_sf(xlim = if(is.null(ranges$x_range)){c(min(mDF$long),max(mDF$long))}else{ranges$x_range}, ylim = if(is.null(ranges$y_range)){c(min(mDF$lat),max(mDF$lat))}else{ranges$y_range}, expand = T)+
-                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-                      panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
-              
-              ## to enable ratio 1/1, but if many individuals, than  useless for now
-              # plotL <- lapply(split(mDF, mDF$indiv), function(x){
-              #   p <- ggplot(x) + 
-              #     geom_point(aes(x=long, y=lat), colour="black", size=0.5,shape=20)+
-              #     geom_path(aes(x=long, y=lat, colour=attribute, group=indiv))+ #, size=input$linesize
-              #     scale_colour_gradient2(low=input$colmin, mid=input$colmid, high=input$colmax, midpoint=mpt, name=input$attributeL
-              #                            # , breaks=round(seq(minattr,maxattr,length.out=3),2),labels=round(seq(minattr,maxattr,length.out=3),2)
-              #     )+
-              #     labs(x ="Longitude", y = "Latitude", title=unique(x$indiv))+
-              #     coord_fixed(xlim = ranges$x_range, ylim = ranges$y_range, expand = T)+
-              #     theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-              #           panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))
-              #   return(p)
-              # })
-              # 
-              # plot_grid(plotlist=plotL)
-            }
-          }else{ ## attrib is non numeric
-            ggplot(mDF) + 
-              geom_sf(data=world) +
-              geom_point(aes(x=long, y=lat), colour="black", size=0.5,shape=20)+
-              geom_path(aes(x=long, y=lat, colour=attribute, group=indiv))+
-              # facet_wrap(~indiv, scales="free")+
-              facet_wrap(~indiv)+
-              # scale_color_discrete(name=input$attributeL)+
-              scale_colour_manual(values = rainbow(length(unique(mDF$attribute))),name=input$attributeL)+
-              # coord_fixed()+
-              labs( x ="Longitude", y = "Latitude")+ 
-              # coord_cartesian(xlim = ranges$x_range, ylim = ranges$y_range, expand = T)+
-              coord_sf(xlim = if(is.null(ranges$x_range)){c(min(mDF$long),max(mDF$long))}else{ranges$x_range}, ylim = if(is.null(ranges$y_range)){c(min(mDF$lat),max(mDF$lat))}else{ranges$y_range}, expand = T)+
-              theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-                    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
-          }
-        }
-      }
-    }
-  })     
   
-  ### save plot ###
-  output$savePlot <- downloadHandler(
-    filename = "ColorSegmentsByAttributePlot.png",
-    content = function(file) {
-      ggsave(file, device = "png", units="mm", width = input$widthmm, height = input$heightmm)
+  # color selection
+  output$ui_color_controls <- renderUI({
+    at <- attribute_type()
+    if (isTRUE(at$is_cont)) {
+      tagList(
+        fluidRow(
+          column(6, colourInput("col_low",  "Low",  "yellow")),
+          column(6, colourInput("col_high", "High", "blue"))
+        )
+      )
+    } else {
+      selectInput("cat_pal", "Palette",
+                  choices = c("Set2","Set3","Dark2","Paired","Accent","Glasbey"),
+                  selected = "Set2")
     }
-  )
-  return(reactive({ current() }))
+  })
+  
+  
+  
+  # segments 
+  seg_and_pal <- reactive({
+    req(input$attr)
+    mv   <- mv_sel()
+    segs <- make_segments(mv, input$attr)
+    validate(need(nrow(segs) > 0, "No line segments for selected animals."))
+    
+    at <- attribute_type()
+    if (isTRUE(at$is_cont)) {
+      low  <- if (is.null(input$col_low))  "yellow" else input$col_low
+      high <- if (is.null(input$col_high)) "blue" else input$col_high
+      pal  <- colorNumeric(colorRampPalette(c(low, high))(256),
+                           domain = as.numeric(segs$value), na.color = NA)
+      list(segs = segs, pal = pal, cont = TRUE,  legend_vals = as.numeric(segs$value))
+    } else {
+      levs <- levels(factor(segs$value))
+      pname <- if (is.null(input$cat_pal)) "Set2" else input$cat_pal
+      cols <- if (tolower(pname) == "glasbey") {
+        pals::glasbey(length(levs))
+      } else {
+        maxn <- RColorBrewer::brewer.pal.info[pname, "maxcolors"]
+        RColorBrewer::brewer.pal(min(maxn, max(3, length(levs))), pname)[seq_along(levs)]
+      }
+      pal <- colorFactor(cols, domain = levs, na.color = NA)
+      list(segs = segs, pal = pal, cont = FALSE, legend_vals = levs)
+    }
+  })
+  
+  
+  
+  
+  
+  
+  
+  output$map <- renderLeaflet({
+    ac <- seg_and_pal()
+    segs <- ac$segs
+    
+    bb <- as.vector(sf::st_bbox(segs))
+    m <- leaflet(options = leafletOptions(minZoom = 2)) %>%
+      addTiles() %>%
+      fitBounds(bb[1], bb[2], bb[3], bb[4]) %>%
+      addPolylines(
+        data   = segs,
+        weight = input$linesize_att,
+        opacity = input$linealpha_att,
+        dashArray= line_type(input$linetype_att),
+        color  = if (ac$cont) ~ac$pal(as.numeric(value)) else ~ac$pal(as.character(value))
+      )
+    
+    m %>% addLegend("bottomright", pal = ac$pal, values = ac$legend_vals,
+                    title = input$attr, opacity = 1)
+  })
 }
 
+shinyApp(ui, server)
