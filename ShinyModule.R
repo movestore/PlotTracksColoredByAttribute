@@ -5,7 +5,7 @@ library(dplyr)
 library(leaflet)
 library(RColorBrewer)
 library(pals)
-
+library(colourpicker)
 
 my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
@@ -84,7 +84,6 @@ ui <- fluidPage(
                    column(4, actionButton("select_all_animals", "Select All",  class = "btn-sm"),actionButton("unselect_animals",  "Unselect All", class = "btn-sm"))
                  ),
                  
-                 checkboxGroupInput("animals", NULL, choices = NULL),
                  hr(),
                  h4("Attribute"),
                  selectInput("attr", NULL, choices = NULL),
@@ -210,9 +209,10 @@ server <- function(input, output, session) {
     if (isTRUE(at$is_cont)) {
       low  <- if (is.null(input$col_low))  "yellow" else input$col_low
       high <- if (is.null(input$col_high)) "blue" else input$col_high
+      color_range  <- range(as.numeric(segs$value), na.rm = TRUE)
       pal  <- colorNumeric(colorRampPalette(c(low, high))(256),
                            domain = as.numeric(segs$value), na.color = NA)
-      list(segs = segs, pal = pal, cont = TRUE,  legend_vals = as.numeric(segs$value))
+      list(segs = segs, pal = pal, cont = TRUE,  legend_vals = color_range )
     } else {
       levs <- levels(factor(segs$value))
       pname <- if (is.null(input$cat_pal)) "Set2" else input$cat_pal
