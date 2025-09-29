@@ -9,52 +9,37 @@ library(colourpicker)
 
 my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
-# ---- helpers ----
+######### helpers:
 
-## helper 1 : making segments #####
-make_segments <- function(mv, attr_name) {
-  if (nrow(mv) < 2) return(sf::st_sf(value = numeric(0), geometry = sf::st_sfc(crs = 4326)))
-  
-  # order, drop exact duplicate (id,time), drop  missing 
-  dd <- sf::st_drop_geometry(mv) |> as.data.frame()
-  coords <- sf::st_coordinates(mv)
-  tib <- tibble::tibble(
-    id = as.character(mt_track_id(mv)),
-    t  = mt_time(mv),
-    x  = coords[,1],
-    y  = coords[,2],
-    a  = dd[[attr_name]]
-  ) |>
-    arrange(id, t) |>
-    distinct(id, t, .keep_all = TRUE) |>
-    filter(!is.na(x), !is.na(y))
-  
-  if (nrow(tib) < 2) return(sf::st_sf(value = numeric(0), geometry = sf::st_sfc(crs = 4326)))
-  
-  # lead rows within id to make segments
-  segdf <- tib |>
-    group_by(id) |>
-    mutate(x2 = lead(x), y2 = lead(y), a2 = lead(a)) |>
-    filter(!is.na(x2), !is.na(y2)) |>
-    ungroup()
-  
-  if (nrow(segdf) == 0) return(sf::st_sf(value = numeric(0), geometry = sf::st_sfc(crs = 4326)))
-  
-  # value per segment: numeric/units -> midpoint; else start value
-  seg_val <- if (is.numeric(segdf$a) || inherits(segdf$a, "units")) {
-    (as.numeric(segdf$a) + as.numeric(segdf$a2)) / 2
-  } else {
-    as.character(segdf$a)
+### helper 1 : making segments #####
+make_segments <- function(tracks, attr_name) {
+  if (nrow(tracks) < 2) {
+    return(sf::st_sf(value = numeric(0),
+                     geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
   }
   
-  geoms <- lapply(seq_len(nrow(segdf)), function(i) {
-    sf::st_linestring(matrix(c(segdf$x[i], segdf$y[i], segdf$x2[i], segdf$y2[i]), ncol = 2, byrow = TRUE))
-  })
+  # segments
+  segs <- mt_segments(tracks)
+  
+  id   <- as.character(mt_track_id(tracks))
+  vals <- sf::st_drop_geometry(tracks)[[attr_name]]
+  
+  # keep only pairs within the same track
+  same_track_next <- c(id[-length(id)] == id[-1], FALSE)
+  if (!any(same_track_next)) {
+    return(sf::st_sf(value = numeric(0),
+                     geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
+  }
+  
+  seg_val <- if (is.numeric(vals) || inherits(vals, "units")) {
+    (as.numeric(vals[same_track_next]) + as.numeric(vals[which(same_track_next) + 1])) / 2
+  } else {
+    as.character(vals[same_track_next])
+  }
   
   sf::st_sf(
-    id = segdf$id,
-    value = seg_val,
-    geometry = sf::st_sfc(geoms, crs = sf::st_crs(mv))
+    value    = seg_val,
+    geometry = segs[same_track_next]
   )
 }
 
@@ -73,7 +58,7 @@ line_type <- function(x) {
 
 
 
-# ---- UI ----
+#####  UI 
 ui <- fluidPage(
   titlePanel("Tracks colored by attribute"),
   sidebarLayout(
@@ -157,6 +142,9 @@ server <- function(input, output, session) {
       arrange(mt_track_id(), mt_time())
   })
   
+  
+  
+  
   ### Attribute type
   max_level <- 10
   attribute_type <- reactive({
@@ -226,8 +214,6 @@ server <- function(input, output, session) {
       list(segs = segs, pal = pal, cont = FALSE, legend_vals = levs)
     }
   })
-  
-  
   
   
   
