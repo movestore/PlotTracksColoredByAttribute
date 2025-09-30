@@ -70,6 +70,13 @@ ui <- fluidPage(
                  ),
                  
                  hr(),
+                 
+                 h4("Display"),
+                 radioButtons("panel_mode", NULL,
+                              choices = c("Single panel","Multipanel"),
+                              selected = "Single panel", inline = TRUE),
+                 
+                 hr(),
                  h4("Attribute"),
                  selectInput("attr", NULL, choices = NULL),
                  div(id = "attr-type-msg", tags$small(textOutput("attr_info"), style = "color:darkblue;")),
@@ -87,7 +94,8 @@ ui <- fluidPage(
                  
     ),
     mainPanel(
-      leafletOutput("map", height = "85vh")
+      #leafletOutput("map", height = "85vh")
+      uiOutput("maps_ui")
     )
   )
 )
@@ -142,7 +150,7 @@ server <- function(input, output, session) {
     
     if (is.null(sel) || length(sel) == 0) {
       showNotification("Please select one or more animals.", type = "warning", duration = 3)
-      return(mv[0, ])  # return an empty move2 with same columns
+      return(mv[0, ])  
     }
     
     mv[as.character(mt_track_id(mv)) %in% sel, ] %>%
@@ -169,13 +177,12 @@ server <- function(input, output, session) {
     vals <- dd[[input$attr]]
     n_unique <- length(unique(stats::na.omit(vals)))
     is_cont <- is.numeric(vals) || inherits(vals, "units") || n_unique > max_level
-    list(n_unique = n_unique, is_cont = is_cont)
+    list(n_unique = n_unique, is_cont = is_cont , empty = FALSE)
   })
   
   output$attr_info <- renderText({
     req(attribute_type())
     at <- attribute_type()
-    
     
     if (isTRUE(at$empty)) return("Please select one or more animals.")
     if (at$is_cont) "Selected attribute is Continuous" else "Selected attribute is Categorical"
@@ -202,58 +209,98 @@ server <- function(input, output, session) {
   
   
   # segments 
-  seg_and_pal <- reactive({
-    req(input$attr)
-    mv   <- mv_sel()
-    validate(need(nrow(mv) > 0, "Please select one or more animals."))
+  #  single-map
+  leaflet_map <- function(single_indiv){
     
-    segs <- make_segments(mv, input$attr)
+    segs <- make_segments(single_indiv, input$attr)
     validate(need(nrow(segs) > 0, "No line segments for selected animals."))
     
-    at <- attribute_type()
+    at <- attribute_type() 
+    
     if (isTRUE(at$is_cont)) {
       low  <- if (is.null(input$col_low))  "yellow" else input$col_low
       high <- if (is.null(input$col_high)) "blue" else input$col_high
-      color_range  <- range(as.numeric(segs$value), na.rm = TRUE)
       pal  <- colorNumeric(colorRampPalette(c(low, high))(256),
                            domain = as.numeric(segs$value), na.color = NA)
-      list(segs = segs, pal = pal, cont = TRUE,  legend_vals = color_range )
+      legend_vals <- range(as.numeric(segs$value), na.rm = TRUE)
+      color_selection   <- ~pal(as.numeric(value))
+      
     } else {
       levs <- levels(factor(segs$value))
       pname <- if (is.null(input$cat_pal)) "Set2" else input$cat_pal
-      cols <- if (tolower(pname) == "glasbey") {
-        pals::glasbey(length(levs))
-      } else {
-        maxn <- RColorBrewer::brewer.pal.info[pname, "maxcolors"]
-        RColorBrewer::brewer.pal(min(maxn, max(3, length(levs))), pname)[seq_along(levs)]
-      }
+      cols <- if (tolower(pname) == "glasbey") pals::glasbey(length(levs))
+      else RColorBrewer::brewer.pal(min(RColorBrewer::brewer.pal.info[pname,"maxcolors"],
+                                        max(3, length(levs))), pname)[seq_along(levs)]
       pal <- colorFactor(cols, domain = levs, na.color = NA)
-      list(segs = segs, pal = pal, cont = FALSE, legend_vals = levs)
+      legend_vals <- levs
+      color_selection   <- ~pal(as.character(value))
     }
-  })
-  
-  
-  
-  
-  
-  output$map <- renderLeaflet({
-    ac <- seg_and_pal()
-    segs <- ac$segs
     
     bb <- as.vector(sf::st_bbox(segs))
-    m <- leaflet(options = leafletOptions(minZoom = 2)) %>%
+    leaflet(options = leafletOptions(minZoom = 2)) %>%
       addTiles() %>%
       fitBounds(bb[1], bb[2], bb[3], bb[4]) %>%
-      addPolylines(
-        data   = segs,
-        weight = input$linesize_att,
-        opacity = input$linealpha_att,
-        dashArray= line_type(input$linetype_att),
-        color  = if (ac$cont) ~ac$pal(as.numeric(value)) else ~ac$pal(as.character(value))
-      )
+      addPolylines(data = segs,
+                   weight = input$linesize_att,
+                   opacity = input$linealpha_att,
+                   dashArray = line_type(input$linetype_att),
+                   color = color_selection) %>%
+      addLegend("topleft", pal = pal, values = legend_vals,
+                title = input$attr, opacity = 1, className = "tiny-legend")
+  }
+  
+  # dynamic panel 
+  output$maps_ui <- renderUI({
+    ids <- input$animals
+    if (is.null(ids) || length(ids) == 0)
+      return(div(style="color:red; font-weight:700; padding:10px;",
+                 "Please select one or more animals."))
     
-    m %>% addLegend("bottomright", pal = ac$pal, values = ac$legend_vals,
-                    title = input$attr, opacity = 1)
+    if (identical(input$panel_mode, "Single panel")) {
+      return(leafletOutput("map_single", height = "85vh"))
+    }
+    
+    
+  # Multipanel setting
+  n <- length(ids)
+  width <- 6  
+  
+  cols <- lapply(seq_along(ids), function(i) {
+    column(width, leafletOutput(paste0("map_", ids[i]), height = "45vh"))
+  })
+  
+  rows <- lapply(split(cols, ceiling(seq_along(cols) / 2)), function(chunk) {
+    do.call(fluidRow, chunk)
+  })
+  
+  tagList(rows)
+  
+  })
+  
+  # Single panel
+  output$map_single <- renderLeaflet({
+    mv <- mv_sel()
+    validate(need(nrow(mv) > 0, "Please select one or more animals."))
+    leaflet_map(mv)
+  })
+  
+  # Multipanel
+  observe({
+    req(input$panel_mode == "Multipanel")
+    ids <- input$animals
+    mv  <- mv_sel()
+    if (is.null(ids) || length(ids) == 0 || nrow(mv) == 0) return()
+    
+    lapply(ids, function(id_i){
+      local({
+        id_loc <- id_i
+        output[[paste0("map_", id_loc)]] <- renderLeaflet({
+          mv_id <- mv[as.character(mt_track_id(mv)) == id_loc, ]
+          validate(need(nrow(mv_id) > 0, "No data for this animal."))
+          leaflet_map(mv_id)
+        })
+      })
+    })
   })
 }
 
