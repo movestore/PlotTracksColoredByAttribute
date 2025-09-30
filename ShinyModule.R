@@ -24,7 +24,7 @@ make_segments <- function(tracks, attr_name) {
   id   <- as.character(mt_track_id(tracks))
   vals <- sf::st_drop_geometry(tracks)[[attr_name]]
   
-  # keep only pairs within the same track
+  # keep only pairs
   same_track_next <- c(id[-length(id)] == id[-1], FALSE)
   if (!any(same_track_next)) {
     return(sf::st_sf(value = numeric(0),
@@ -136,9 +136,16 @@ server <- function(input, output, session) {
   })
   
   mv_sel <- reactive({
-    req(input$animals)
+    #req(input$animals)
     mv <- mv_all()
-    mv[as.character(mt_track_id(mv)) %in% input$animals, ] %>%
+    sel <- input$animals
+    
+    if (is.null(sel) || length(sel) == 0) {
+      showNotification("Please select one or more animals.", type = "warning", duration = 3)
+      return(mv[0, ])  # return an empty move2 with same columns
+    }
+    
+    mv[as.character(mt_track_id(mv)) %in% sel, ] %>%
       arrange(mt_track_id(), mt_time())
   })
   
@@ -147,8 +154,17 @@ server <- function(input, output, session) {
   
   ### Attribute type
   max_level <- 10
+  
   attribute_type <- reactive({
     req(input$attr)
+    
+    mv <- mv_sel()
+    # If no animals selected
+    if (is.null(mv) || nrow(mv) == 0) {
+      return(list(n_unique = 0, is_cont = TRUE, empty = TRUE))
+    }
+    
+    
     dd   <- sf::st_drop_geometry(mv_sel()) |> as.data.frame()
     vals <- dd[[input$attr]]
     n_unique <- length(unique(stats::na.omit(vals)))
@@ -159,11 +175,10 @@ server <- function(input, output, session) {
   output$attr_info <- renderText({
     req(attribute_type())
     at <- attribute_type()
-    if (at$is_cont) {
-      paste0("selected Attribute is Continuous")
-    } else {
-      paste0("selected Attribute is Categorical")
-    }
+    
+    
+    if (isTRUE(at$empty)) return("Please select one or more animals.")
+    if (at$is_cont) "Selected attribute is Continuous" else "Selected attribute is Categorical"
   })
   
   
@@ -190,6 +205,8 @@ server <- function(input, output, session) {
   seg_and_pal <- reactive({
     req(input$attr)
     mv   <- mv_sel()
+    validate(need(nrow(mv) > 0, "Please select one or more animals."))
+    
     segs <- make_segments(mv, input$attr)
     validate(need(nrow(segs) > 0, "No line segments for selected animals."))
     
