@@ -84,6 +84,15 @@ ui <- fluidPage(
                               choices = c("Single panel","Multipanel"),
                               selected = "Single panel", inline = TRUE),
                  
+                 h4("Base map"),
+                 radioButtons(
+                   "basemap", NULL,
+                   choices  = c("OpenStreetMap", "TopoMap", "Aerial"),
+                   selected = "OpenStreetMap",
+                   inline   = TRUE
+                 ),
+                 
+                 
                  hr(),
                  h4("Attribute"),
                  selectInput("attr", NULL, choices = NULL),
@@ -252,14 +261,26 @@ server <- function(input, output, session) {
       addTiles() %>%
       fitBounds(bb[1], bb[2], bb[3], bb[4]) %>%
       
-      addProviderTiles("Esri.WorldTopoMap", group = "TopoMap") %>%
-      addProviderTiles("Esri.WorldImagery", group = "Aerial") %>%
-      addTiles(group = "OpenStreetMap") %>%
+      # addProviderTiles("Esri.WorldTopoMap", group = "TopoMap") %>%
+      # addProviderTiles("Esri.WorldImagery", group = "Aerial") %>%
+      # addTiles(group = "OpenStreetMap") %>%
+      # addScaleBar(position = "topleft") %>%
+      # addLayersControl(
+      #   baseGroups = c("OpenStreetMap", "TopoMap", "Aerial"),
+      #   options = layersControlOptions(collapsed = FALSE)
+      # ) %>%
+      
+      {
+        if (identical(input$basemap, "TopoMap")) {
+          addProviderTiles(., "Esri.WorldTopoMap")
+        } else if (identical(input$basemap, "Aerial")) {
+          addProviderTiles(., "Esri.WorldImagery")
+        } else {
+          addTiles(.)
+        }
+      } %>%
       addScaleBar(position = "topleft") %>%
-      addLayersControl(
-        baseGroups = c("OpenStreetMap", "TopoMap", "Aerial"),
-        options = layersControlOptions(collapsed = FALSE)
-      ) %>%
+      
     
       addPolylines(data = segs,
                    weight = input$linesize_att,
