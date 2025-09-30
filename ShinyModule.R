@@ -7,7 +7,7 @@ library(RColorBrewer)
 library(pals)
 library(colourpicker)
 
-my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
+my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
 
 ######### helpers:
 
