@@ -61,6 +61,14 @@ line_type <- function(x) {
 #####  UI 
 ui <- fluidPage(
   titlePanel("Tracks colored by attribute"),
+  
+  tags$style(HTML("
+      .tiny-legend { font-size: 11px !important; line-height: 0.9; }
+      .tiny-legend .leaflet-control { padding: 5px 5px; }
+      .tiny-legend .legend-title { margin-bottom: 2px; }
+    ")),
+  
+  
   sidebarLayout(
     sidebarPanel(width = 4,
                  h4("Animals"),
@@ -171,10 +179,7 @@ server <- function(input, output, session) {
     if (is.null(mv) || nrow(mv) == 0) {
       return(list(n_unique = 0, is_cont = TRUE, empty = TRUE))
     }
-    
-    
-    dd   <- sf::st_drop_geometry(mv_sel()) |> as.data.frame()
-    vals <- dd[[input$attr]]
+    vals <- sf::st_drop_geometry(mv)[[input$attr]]
     n_unique <- length(unique(stats::na.omit(vals)))
     is_cont <- is.numeric(vals) || inherits(vals, "units") || n_unique > max_level
     list(n_unique = n_unique, is_cont = is_cont , empty = FALSE)
@@ -228,24 +233,40 @@ server <- function(input, output, session) {
     } else {
       levs <- levels(factor(segs$value))
       pname <- if (is.null(input$cat_pal)) "Set2" else input$cat_pal
-      cols <- if (tolower(pname) == "glasbey") pals::glasbey(length(levs))
-      else RColorBrewer::brewer.pal(min(RColorBrewer::brewer.pal.info[pname,"maxcolors"],
-                                        max(3, length(levs))), pname)[seq_along(levs)]
+      cols <- if (tolower(pname) == "glasbey") {
+        pals::glasbey(length(levs))
+      } else {
+        maxn <- RColorBrewer::brewer.pal.info[pname, "maxcolors"]
+        base <- RColorBrewer::brewer.pal(min(maxn, max(3, length(levs))), pname)
+        base[seq_len(length(levs))]
+      }
+      
       pal <- colorFactor(cols, domain = levs, na.color = NA)
       legend_vals <- levs
       color_selection   <- ~pal(as.character(value))
     }
     
     bb <- as.vector(sf::st_bbox(segs))
+    
     leaflet(options = leafletOptions(minZoom = 2)) %>%
       addTiles() %>%
       fitBounds(bb[1], bb[2], bb[3], bb[4]) %>%
+      
+      addProviderTiles("Esri.WorldTopoMap", group = "TopoMap") %>%
+      addProviderTiles("Esri.WorldImagery", group = "Aerial") %>%
+      addTiles(group = "OpenStreetMap") %>%
+      addScaleBar(position = "topleft") %>%
+      addLayersControl(
+        baseGroups = c("OpenStreetMap", "TopoMap", "Aerial"),
+        options = layersControlOptions(collapsed = FALSE)
+      ) %>%
+    
       addPolylines(data = segs,
                    weight = input$linesize_att,
                    opacity = input$linealpha_att,
                    dashArray = line_type(input$linetype_att),
                    color = color_selection) %>%
-      addLegend("topleft", pal = pal, values = legend_vals,
+      addLegend("bottomright", pal = pal, values = legend_vals,
                 title = input$attr, opacity = 1, className = "tiny-legend")
   }
   
