@@ -1,4 +1,3 @@
-
 library(shiny)
 library(move2)
 library(sf)
@@ -8,7 +7,8 @@ library(RColorBrewer)
 library(pals)
 library(colourpicker)
 
-my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
+#my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
+my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
 ####### helpers #######
 
@@ -54,15 +54,14 @@ ui <- fluidPage(
       .tiny-legend .legend-title { margin-bottom: 2px; }
   ")),
   sidebarLayout(
-    sidebarPanel(width = 4,
+    sidebarPanel(width = 3,
                  h4("Animals"),
+                 checkboxGroupInput("animals", NULL, choices = NULL),
                  fluidRow(
-                   column(8, checkboxGroupInput("animals", NULL, choices = NULL)),
-                   column(4,
-                          actionButton("select_all_animals", "Select All",  class = "btn-sm"),
-                          actionButton("unselect_animals",  "Unselect All", class = "btn-sm")
-                   )
+                   column(6,actionButton("select_all_animals", "Select All Animals",  class = "btn-sm") ),
+                   column(6,actionButton("unselect_animals",  "Unselect All Animals", class = "btn-sm"))
                  ),
+                 
                  h4("Display"),
                  radioButtons("panel_mode", NULL,
                               choices = c("Single panel","Multipanel"),
@@ -95,7 +94,7 @@ ui <- fluidPage(
 ####### server #######
 server <- function(input, output, session) {
   
-  # Locked so that only change on clicking on buttun
+  # Locked so that only change on clicking on button
   locked_settings <- reactiveVal(NULL)
   locked_mv       <- reactiveVal(NULL)
   
@@ -139,7 +138,7 @@ server <- function(input, output, session) {
       arrange(mt_track_id(), mt_time())
   })
   
-  #first time shows map
+  # first time shows map
   observe({
     mv <- mv_sel()
     if (!is.null(input$attr) && nrow(mv) > 0 &&
@@ -159,7 +158,7 @@ server <- function(input, output, session) {
     }
   })
   
-  #update locked
+  # update locked
   observeEvent(input$apply_btn, {
     locked_mv(mv_sel())
     locked_settings(list(
@@ -175,7 +174,7 @@ server <- function(input, output, session) {
     ))
   }, ignoreInit = TRUE)
   
-  #  attribute type 
+  # attribute type (live)
   attribute_type_live <- reactive({
     req(input$attr)
     mv <- mv_sel()
@@ -217,26 +216,26 @@ server <- function(input, output, session) {
     }
   })
   
-  #  map only changes on Apply button
-  seg_and_pal <- reactive({
-    s  <- locked_settings(); req(s)
-    mv <- locked_mv();       req(mv, nrow(mv) > 0, s$attr)
+  #leaflet map 
+  leaflet_map <- function(mv_subset) {
+    s <- locked_settings(); req(s)
+    req(mv_subset, nrow(mv_subset) > 0, s$attr)
     
-    segs <- make_segments(mv, s$attr)
+    segs <- make_segments(mv_subset, s$attr)
     validate(need(nrow(segs) > 0, "No line segments for selected animals."))
     
-    # Recompute attribute-type
-    vals_locked <- sf::st_drop_geometry(mv)[[s$attr]]
+    vals_locked <- sf::st_drop_geometry(mv_subset)[[s$attr]]
     n_unique <- length(unique(stats::na.omit(vals_locked)))
     is_cont_locked <- is.numeric(vals_locked) || inherits(vals_locked, "units") || n_unique > 10
     
-    if (isTRUE(is_cont_locked)) {
+    if (is_cont_locked) {
       low  <- if (is.null(s$col_low))  "yellow" else s$col_low
       high <- if (is.null(s$col_high)) "blue"   else s$col_high
       rng  <- range(as.numeric(segs$value), na.rm = TRUE)
       pal  <- colorNumeric(colorRampPalette(c(low, high))(256),
                            domain = rng, na.color = NA)
-      list(segs = segs, pal = pal, cont = TRUE, legend_vals = rng)
+      color_selection <- ~pal(as.numeric(value))
+      legend_vals <- rng
     } else {
       levs <- levels(factor(segs$value))
       pname <- if (is.null(s$cat_pal)) "Set2" else s$cat_pal
@@ -248,14 +247,10 @@ server <- function(input, output, session) {
         base[seq_len(length(levs))]
       }
       pal <- colorFactor(cols, domain = levs, na.color = NA)
-      list(segs = segs, pal = pal, cont = FALSE, legend_vals = levs)
+      color_selection <- ~pal(as.character(value))
+      legend_vals <- levs
     }
-  })
-  
-  leaflet_map <- function() {
-    s  <- locked_settings(); ac <- seg_and_pal()
-    segs <- ac$segs; pal <- ac$pal; legend_vals <- ac$legend_vals
-    color_selection <- if (ac$cont) ~pal(as.numeric(value)) else ~pal(as.character(value))
+    
     bb <- as.vector(sf::st_bbox(segs))
     m <- leaflet(options = leafletOptions(minZoom = 2)) %>%
       fitBounds(bb[1], bb[2], bb[3], bb[4])
@@ -270,10 +265,11 @@ server <- function(input, output, session) {
                 title = s$attr, opacity = 1, className = "tiny-legend")
   }
   
+  
   # Layout 
   output$maps_ui <- renderUI({
     s <- locked_settings()
-    if (is.null(s)) return(div("Loading…"))
+    if (is.null(s)) return(div("Pleas Wait. It is Loading…"))
     ids <- s$animals
     if (is.null(ids) || length(ids) == 0)
       return(div(style="color:red; font-weight:700; padding:10px;",
@@ -283,7 +279,12 @@ server <- function(input, output, session) {
     }
     width <- 6
     cols <- lapply(seq_along(ids), function(i) {
-      column(width, leafletOutput(paste0("map_", ids[i]), height = "45vh"))
+      content <- tagList(
+        tags$h5(paste("Animal:", ids[i]),
+                style = "text-align: center; margin-top: 5px; margin-bottom: 5px;"),
+        leafletOutput(paste0("map_", ids[i]), height = "45vh")
+      )
+      column(width, content)
     })
     rows <- lapply(split(cols, ceiling(seq_along(cols) / 2)), function(chunk) {
       do.call(fluidRow, chunk)
@@ -294,19 +295,23 @@ server <- function(input, output, session) {
   # Render maps 
   output$map_single <- renderLeaflet({
     validate(need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
-    leaflet_map()
+    leaflet_map(locked_mv())   
   })
   
   observe({
     s <- locked_settings()
     req(s, identical(s$panel_mode, "Multipanel"))
     ids <- s$animals; if (is.null(ids) || length(ids) == 0) return()
+    mv_all_locked <- locked_mv(); req(mv_all_locked)
+    
     lapply(ids, function(id_i){
       local({
         id_loc <- id_i
         output[[paste0("map_", id_loc)]] <- renderLeaflet({
           validate(need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
-          leaflet_map()
+          mv_id <- mv_all_locked[as.character(mt_track_id(mv_all_locked)) == id_loc, ]
+          validate(need(nrow(mv_id) > 0, "No data for this animal."))
+          leaflet_map(mv_id)  
         })
       })
     })
