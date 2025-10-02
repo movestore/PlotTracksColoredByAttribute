@@ -6,6 +6,8 @@ library(leaflet)
 library(RColorBrewer)
 library(pals)
 library(colourpicker)
+library(shinycssloaders)  
+
 
 #my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
 my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
@@ -275,14 +277,16 @@ server <- function(input, output, session) {
       return(div(style="color:red; font-weight:700; padding:10px;",
                  "Please select one or more animals."))
     if (identical(s$panel_mode, "Single panel")) {
-      return(leafletOutput("map_single", height = "85vh"))
+      #return(leafletOutput("map_single", height = "85vh"))
+      return(  withSpinner( leafletOutput("map_single", height = "85vh"), type = 4, color = "blue",  size = 0.9  )  )
     }
     width <- 6
     cols <- lapply(seq_along(ids), function(i) {
       content <- tagList(
         tags$h5(paste("Animal:", ids[i]),
                 style = "text-align: center; margin-top: 5px; margin-bottom: 5px;"),
-        leafletOutput(paste0("map_", ids[i]), height = "45vh")
+        #leafletOutput(paste0("map_", ids[i]), height = "45vh")
+        withSpinner(leafletOutput(paste0("map_", ids[i]), height = "45vh"), type = 4,  color = "blue",  size = 0.9  )
       )
       column(width, content)
     })
