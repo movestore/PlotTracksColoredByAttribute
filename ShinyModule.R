@@ -9,11 +9,10 @@ library(colourpicker)
 library(shinycssloaders)  
 library(htmlwidgets)
 library(webshot2)
-library(htmltools)
+library(zip)
 
-
-my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
-#my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
+#my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
+my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
 ####### helpers #######
 
@@ -90,6 +89,7 @@ ui <- fluidPage(
                  hr(),
                  actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block"),
                  hr(),hr(),
+                 h4("Download:"),
                  fluidRow(
                    column(6, downloadButton("save_html","Download as HTML", class = "btn-sm")),
                    column(6, downloadButton("save_png", "Save Map as PNG", class = "btn-sm")))
@@ -328,25 +328,99 @@ server <- function(input, output, session) {
     })
   })
   
+  
+  ###download part
+  
   map_widget <- reactive({
     req(locked_settings(), locked_mv())
     leaflet_map(locked_mv())
   })
   
-  output$save_html <- downloadHandler(
-    filename = function() paste0("Tracks_", Sys.Date(), ".html"),
-    content  = function(file)  htmlwidgets::saveWidget(map_widget(), file, selfcontained = TRUE)
-  )
   
-  output$save_png <- downloadHandler(
-    filename = function() paste0("Tracks_", Sys.Date(), ".png"),
-    content  = function(file) {
-      tf  <- tempfile(fileext = ".html")
-      htmlwidgets::saveWidget(map_widget(), tf, selfcontained = TRUE)
-      url <- paste0("file:///", gsub("\\\\", "/", normalizePath(tf)))  # for Windows
-      webshot2::webshot(url, file, vwidth = 1400, vheight = 900, delay = 1)
+  #  HTML download
+  output$save_html <- downloadHandler(
+    filename = function() {
+      s <- locked_settings(); req(s)
+      if (identical(s$panel_mode, "Multipanel")) {
+        paste0("Plots_HTML_", Sys.Date(), ".zip")
+      } else {
+        paste0("Plots_HTML_", Sys.Date(), ".html")
+      }
+    },
+    content = function(file) {
+      s  <- locked_settings(); mv <- locked_mv(); req(s, mv)
+      
+      # single panel 
+      if (!identical(s$panel_mode, "Multipanel")) {
+        htmlwidgets::saveWidget(leaflet_map(mv), file = file, selfcontained = TRUE)
+        return(invisible())
+      }
+      
+      # multipanel
+      ids <- s$animals; req(length(ids) > 0)
+      td <- tempfile("tracks_html_"); dir.create(td)
+      
+      for (id in ids) {
+        mv_id <- mv[as.character(mt_track_id(mv)) == id, ]
+        if (nrow(mv_id) == 0) next
+        out <- file.path(td, paste0(id, "_", Sys.Date(), ".html"))
+        htmlwidgets::saveWidget(leaflet_map(mv_id), file = out, selfcontained = TRUE, libdir = NULL)
+      }
+      
+      ##zip 
+      
+      files <- list.files(td, pattern = "\\.html$", recursive = FALSE)
+      zip::zipr(zipfile = file, files = files, root = td)
+      
     }
   )
+  
+  # PNG download 
+  output$save_png <- downloadHandler(
+    filename = function() {
+      s <- locked_settings(); req(s)
+      if (identical(s$panel_mode, "Multipanel")) {
+        paste0("Plots_PNG_", Sys.Date(), ".zip")
+      } else {
+        paste0("Plots_PNG_", Sys.Date(), ".png")
+      }
+    },
+    content = function(file) {
+      s  <- locked_settings(); mv <- locked_mv(); req(s, mv)
+      
+      # single panel
+      if (!identical(s$panel_mode, "Multipanel")) {
+        tf  <- tempfile(fileext = ".html")
+        htmlwidgets::saveWidget(leaflet_map(mv), tf, selfcontained = TRUE)
+        url <- if (.Platform$OS.type == "windows")
+          paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
+        webshot2::webshot(url, file, vwidth = 1400, vheight = 900, delay = 1)
+        return(invisible())
+      }
+      
+      # multipanel
+      ids <- s$animals; req(length(ids) > 0)
+      td <- tempfile("tracks_png_"); dir.create(td)
+      
+      for (id in ids) {
+        mv_id <- mv[as.character(mt_track_id(mv)) == id, ]
+        if (nrow(mv_id) == 0) next
+        
+        tf  <- tempfile(fileext = ".html")
+        htmlwidgets::saveWidget(leaflet_map(mv_id), tf, selfcontained = TRUE)
+        url <- if (.Platform$OS.type == "windows")
+          paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
+        
+        out <- file.path(td, paste0(id, "_", Sys.Date(), ".png"))
+        webshot2::webshot(url, out, vwidth = 1400, vheight = 900, delay = 1)
+      }
+      ##zip
+      files <- list.files(td, recursive = FALSE)
+      zip::zipr(zipfile = file, files = files, root = td)
+      
+    }
+  )
+  
   
   
   
