@@ -3,7 +3,7 @@
 1. (done) color the tracks by the values of a selected attribute by the user
 2. (done) keep the possibility to visualize all tracks on one map, or each track on a single map.
 3. (done) make it easier to select/unselect all individuals at once
-4. (?) distinguish between categorical and continuous attributes when choosing the color scale (probably just in the code, saying if there are less than XX values in the attribute it can be considered categorical, and if there are more, than it is continuous, or something like that)
+4. (done?) distinguish between categorical and continuous attributes when choosing the color scale (probably just in the code, saying if there are less than XX values in the attribute it can be considered categorical, and if there are more, than it is continuous, or something like that)
 5. (done) offer the user the possibility to choose among several color palette options
 6. (done) check options for background maps (OSM, stadia, leaflet, mapview, etc. I back then I tried leaflet, but than the problem was that it was tricky to give each  segment its color. Maybe that is now easier). Here a book just on interactive and non interactive maps: Making Maps with R (https://bookdown.org/nicohahn/making_maps_with_r5/docs/introduction.html)
 7. (done) make the maps interactive (user can zoom in and out ideally with the mouse)
