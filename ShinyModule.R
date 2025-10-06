@@ -7,10 +7,13 @@ library(RColorBrewer)
 library(pals)
 library(colourpicker)
 library(shinycssloaders)  
+library(htmlwidgets)
+library(webshot2)
+library(htmltools)
 
 
-#my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
-my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
+my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
+#my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
 ####### helpers #######
 
@@ -56,7 +59,7 @@ ui <- fluidPage(
       .tiny-legend .legend-title { margin-bottom: 2px; }
   ")),
   sidebarLayout(
-    sidebarPanel(width = 3,
+    sidebarPanel(width = 4,
                  h4("Animals"),
                  checkboxGroupInput("animals", NULL, choices = NULL),
                  fluidRow(
@@ -85,7 +88,11 @@ ui <- fluidPage(
                    column(6, sliderInput("linealpha_att", "Transparency", min = 0, max = 1, value = 0.9, step = 0.05))
                  ),
                  hr(),
-                 actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block")
+                 actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block"),
+                 hr(),hr(),
+                 fluidRow(
+                   column(6, downloadButton("save_html","Download as HTML", class = "btn-sm")),
+                   column(6, downloadButton("save_png", "Save Map as PNG", class = "btn-sm")))
     ),
     mainPanel(
       uiOutput("maps_ui")
@@ -320,6 +327,29 @@ server <- function(input, output, session) {
       })
     })
   })
+  
+  map_widget <- reactive({
+    req(locked_settings(), locked_mv())
+    leaflet_map(locked_mv())
+  })
+  
+  output$save_html <- downloadHandler(
+    filename = function() paste0("Tracks_", Sys.Date(), ".html"),
+    content  = function(file)  htmlwidgets::saveWidget(map_widget(), file, selfcontained = TRUE)
+  )
+  
+  output$save_png <- downloadHandler(
+    filename = function() paste0("Tracks_", Sys.Date(), ".png"),
+    content  = function(file) {
+      tf  <- tempfile(fileext = ".html")
+      htmlwidgets::saveWidget(map_widget(), tf, selfcontained = TRUE)
+      url <- paste0("file:///", gsub("\\\\", "/", normalizePath(tf)))  # for Windows
+      webshot2::webshot(url, file, vwidth = 1400, vheight = 900, delay = 1)
+    }
+  )
+  
+  
+  
 }
 
 shinyApp(ui, server)
