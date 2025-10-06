@@ -10,6 +10,8 @@ library(shinycssloaders)
 library(htmlwidgets)
 library(webshot2)
 library(zip)
+library(shinybusy)
+
 
 my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
 #my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
@@ -341,83 +343,69 @@ server <- function(input, output, session) {
   output$save_html <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
-      if (identical(s$panel_mode, "Multipanel")) {
-        paste0("Plots_HTML_", Sys.Date(), ".zip")
-      } else {
-        paste0("Plots_HTML_", Sys.Date(), ".html")
-      }
+      if (identical(s$panel_mode, "Multipanel")) paste0("Plots_HTML_", Sys.Date(), ".zip")
+      else                                       paste0("Plots_HTML_", Sys.Date(), ".html")
     },
     content = function(file) {
+      shinybusy::show_modal_spinner(spin = "fading-circle", text = "Saving HTML…")
+      on.exit(shinybusy::remove_modal_spinner(), add = TRUE)
+      
       s  <- locked_settings(); mv <- locked_mv(); req(s, mv)
       
-      # single panel 
       if (!identical(s$panel_mode, "Multipanel")) {
         htmlwidgets::saveWidget(leaflet_map(mv), file = file, selfcontained = TRUE)
         return(invisible())
       }
       
-      # multipanel
       ids <- s$animals; req(length(ids) > 0)
       td <- tempfile("tracks_html_"); dir.create(td)
-      
       for (id in ids) {
         mv_id <- mv[as.character(mt_track_id(mv)) == id, ]
         if (nrow(mv_id) == 0) next
         out <- file.path(td, paste0(id, "_", Sys.Date(), ".html"))
         htmlwidgets::saveWidget(leaflet_map(mv_id), file = out, selfcontained = TRUE, libdir = NULL)
       }
-      
-      ##zip 
-      
       files <- list.files(td, pattern = "\\.html$", recursive = FALSE)
       zip::zipr(zipfile = file, files = files, root = td)
-      
     }
   )
   
-  # PNG download 
+  #  PNG download
   output$save_png <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
-      if (identical(s$panel_mode, "Multipanel")) {
-        paste0("Plots_PNG_", Sys.Date(), ".zip")
-      } else {
-        paste0("Plots_PNG_", Sys.Date(), ".png")
-      }
+      if (identical(s$panel_mode, "Multipanel")) paste0("Plots_PNG_", Sys.Date(), ".zip")
+      else                                       paste0("Plots_PNG_", Sys.Date(), ".png")
     },
     content = function(file) {
+      shinybusy::show_modal_spinner(spin = "fading-circle", text = "Saving PNG…")
+      on.exit(shinybusy::remove_modal_spinner(), add = TRUE)
+      
       s  <- locked_settings(); mv <- locked_mv(); req(s, mv)
       
-      # single panel
       if (!identical(s$panel_mode, "Multipanel")) {
         tf  <- tempfile(fileext = ".html")
-        htmlwidgets::saveWidget(leaflet_map(mv), tf, selfcontained = TRUE)
+        htmlwidgets::saveWidget(leaflet_map(mv), tf, selfcontained = TRUE, libdir = NULL)
         url <- if (.Platform$OS.type == "windows")
           paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
         webshot2::webshot(url, file, vwidth = 1400, vheight = 900, delay = 1)
         return(invisible())
       }
       
-      # multipanel
       ids <- s$animals; req(length(ids) > 0)
       td <- tempfile("tracks_png_"); dir.create(td)
-      
       for (id in ids) {
         mv_id <- mv[as.character(mt_track_id(mv)) == id, ]
         if (nrow(mv_id) == 0) next
-        
         tf  <- tempfile(fileext = ".html")
-        htmlwidgets::saveWidget(leaflet_map(mv_id), tf, selfcontained = TRUE)
+        htmlwidgets::saveWidget(leaflet_map(mv_id), tf, selfcontained = TRUE, libdir = NULL)
         url <- if (.Platform$OS.type == "windows")
           paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
-        
         out <- file.path(td, paste0(id, "_", Sys.Date(), ".png"))
         webshot2::webshot(url, out, vwidth = 1400, vheight = 900, delay = 1)
       }
-      ##zip
       files <- list.files(td, recursive = FALSE)
       zip::zipr(zipfile = file, files = files, root = td)
-      
     }
   )
   
