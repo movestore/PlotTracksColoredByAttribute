@@ -6,68 +6,89 @@ library(leaflet)
 library(RColorBrewer)
 library(pals)
 library(colourpicker)
-library(shinycssloaders)  
+library(shinycssloaders)
 library(htmlwidgets)
 library(webshot2)
 library(zip)
 library(shinybusy)
 
-
 my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
 #my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
-####### helpers #######
+########### helpers
 
-# helper 1: make segments
-make_segments <- function(tracks, attr_name) {
+##helper 1: attribute type
+attr_is_continuous <- function(vals, threshold = 12) {
+  is_num <- is.numeric(vals) || inherits(vals, "units")
+  if (!is_num) return(FALSE)  #categorical
+  n_unique <- length(unique(stats::na.omit(as.numeric(vals))))
+  n_unique > threshold        #  continuous
+}
+
+##helper2: making segments
+make_segments <- function(tracks, attr_name, threshold = 12) {
   if (nrow(tracks) < 2) {
-    return(sf::st_sf(value = numeric(0),
+    return(sf::st_sf(track = character(0),
+                     value = numeric(0),
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
   }
   segs <- mt_segments(tracks)
   id   <- as.character(mt_track_id(tracks))
   vals <- sf::st_drop_geometry(tracks)[[attr_name]]
+  
   same_track_next <- c(id[-length(id)] == id[-1], FALSE)
   if (!any(same_track_next)) {
-    return(sf::st_sf(value = numeric(0),
+    return(sf::st_sf(track = character(0),
+                     value = numeric(0),
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
   }
-  seg_val <- if (is.numeric(vals) || inherits(vals, "units")) {
-    (as.numeric(vals[same_track_next]) + as.numeric(vals[which(same_track_next) + 1])) / 2
+  
+  if (attr_is_continuous(vals, threshold = threshold)) {
+    v <- as.numeric(vals)
+    seg_val <- (v[same_track_next] + v[which(same_track_next) + 1]) / 2
   } else {
-    as.character(vals[same_track_next])
+    seg_val <- as.character(vals[same_track_next])  # treat as categorical
   }
-  sf::st_sf(value = seg_val, geometry = segs[same_track_next])
+  seg_track <- id[which(same_track_next)]
+  sf::st_sf(track = seg_track, value = seg_val, geometry = segs[same_track_next])
 }
 
-# helper 2: basemap
+##helper 3: selecting base map
 base_map_fun <- function(map, basemap) {
   if (identical(basemap, "TopoMap")) {
     addProviderTiles(map, "Esri.WorldTopoMap")
   } else if (identical(basemap, "Aerial")) {
     addProviderTiles(map, "Esri.WorldImagery")
   } else {
-    addTiles(map) 
+    addTiles(map)
   }
 }
 
-####### UI #######
+
+
+####### UI 
 ui <- fluidPage(
   titlePanel("Tracks colored by attribute"),
   tags$style(HTML("
-      .tiny-legend { font-size: 11px !important; line-height: 0.9; }
-      .tiny-legend .leaflet-control { padding: 5px 5px; }
-      .tiny-legend .legend-title { margin-bottom: 2px; }
-  ")),
+  .tiny-legend { font-size: 11px !important; line-height: 1.1; }
+  
+  .tiny-legend i {
+    width: 14px !important;
+    height: 14px !important;
+    display: inline-block !important;
+    margin-right: 6px !important;
+    opacity: 1 !important;               
+    border: 1px solid rgba(0,0,0,0.25);   
+  }
+")),
   sidebarLayout(
     sidebarPanel(width = 4,
                  h4("Animals"),
                  checkboxGroupInput("animals", NULL, choices = NULL),
                  fluidRow(
-                   column(6,actionButton("select_all_animals", "Select All Animals",  class = "btn-sm") ),
-                   column(6,actionButton("unselect_animals",  "Unselect All Animals", class = "btn-sm"))
+                   column(6, actionButton("select_all_animals", "Select All Animals", class = "btn-sm")),
+                   column(6, actionButton("unselect_animals", "Unselect All Animals", class = "btn-sm"))
                  ),
-                 
                  h4("Display"),
                  radioButtons("panel_mode", NULL,
                               choices = c("Single panel","Multipanel"),
@@ -80,6 +101,7 @@ ui <- fluidPage(
                  h4("Attribute"),
                  selectInput("attr", NULL, choices = NULL),
                  div(id = "attr-type-msg", tags$small(textOutput("attr_info"), style = "color:darkblue;")),
+                 h6("Note: Numeric attributes with fewer than 12 unique values are consider as categorical."),
                  h4("Colors"),
                  uiOutput("ui_color_controls"),
                  hr(),
@@ -90,19 +112,18 @@ ui <- fluidPage(
                  ),
                  hr(),
                  actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block"),
-                 hr(),hr(),
+                 hr(),
                  h4("Download:"),
                  fluidRow(
                    column(6, downloadButton("save_html","Download as HTML", class = "btn-sm")),
-                   column(6, downloadButton("save_png", "Save Map as PNG", class = "btn-sm")))
+                   column(6, downloadButton("save_png", "Save Map as PNG", class = "btn-sm"))
+                 )
     ),
-    mainPanel(
-      uiOutput("maps_ui")
-    )
+    mainPanel(uiOutput("maps_ui"))
   )
 )
 
-####### server #######
+### server 
 server <- function(input, output, session) {
   
   # Locked so that only change on clicking on button
@@ -149,7 +170,7 @@ server <- function(input, output, session) {
       arrange(mt_track_id(), mt_time())
   })
   
-  # first time shows map
+  # first time shows map 
   observe({
     mv <- mv_sel()
     if (!is.null(input$attr) && nrow(mv) > 0 &&
@@ -169,7 +190,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # update locked
+  # update locked state when Apply button is clicked
   observeEvent(input$apply_btn, {
     locked_mv(mv_sel())
     locked_settings(list(
@@ -185,32 +206,22 @@ server <- function(input, output, session) {
     ))
   }, ignoreInit = TRUE)
   
-  # attribute type (live)
   attribute_type_live <- reactive({
     req(input$attr)
     mv <- mv_sel()
-    if (is.null(mv) || nrow(mv) == 0) {
-      return(list(empty = TRUE, is_cont = TRUE))
-    }
+    if (is.null(mv) || nrow(mv) == 0) return(list(empty = TRUE, is_cont = TRUE))
     vals <- sf::st_drop_geometry(mv)[[input$attr]]
-    n_unique <- length(unique(stats::na.omit(vals)))
-    is_cont <- is.numeric(vals) || inherits(vals, "units") || n_unique > 10
-    list(empty = FALSE, is_cont = is_cont)
+    list(empty = FALSE, is_cont = attr_is_continuous(vals, threshold = 12))
   })
   
-  # Show message 
   output$attr_info <- renderText({
     at <- attribute_type_live()
-    if (isTRUE(at$empty)) return("Please select one or more animals.")
     if (at$is_cont) "Selected attribute is Continuous" else "Selected attribute is Categorical"
   })
   
-  # Show color controls 
   output$ui_color_controls <- renderUI({
     at <- attribute_type_live()
-    if (isTRUE(at$empty)) {
-      return(helpText("Select animals to choose colors."))
-    }
+    if (isTRUE(at$empty)) return(helpText("Select animals to choose colors."))
     if (isTRUE(at$is_cont)) {
       tagList(
         fluidRow(
@@ -222,48 +233,76 @@ server <- function(input, output, session) {
       )
     } else {
       selectInput("cat_pal", "Palette",
-                  choices = c("Set2","Set3","Dark2","Paired","Accent","Glasbey"),
-                  selected = if (is.null(isolate(input$cat_pal))) "Set2" else isolate(input$cat_pal))
+                  choices  = c("Set2","Set3","Dark2","Paired","Accent","Glasbey"),
+                  selected = if (is.null(isolate(input$cat_pal))) "Dark2" else isolate(input$cat_pal))
     }
   })
   
-  #leaflet map 
-  leaflet_map <- function(mv_subset) {
-    s <- locked_settings(); req(s)
-    req(mv_subset, nrow(mv_subset) > 0, s$attr)
+  # segments for first locked selection
+  segs_all <- reactive({
+    s  <- locked_settings(); mv <- locked_mv(); req(s, mv, s$attr)
+    segs <- make_segments(mv, s$attr, threshold = 12)
+    validate(need(nrow(segs) > 0, "No segments for selected animals."))
+    segs
+  })
+  
+  # palette for locked selection
+  pal_info <- reactive({
+    s <- locked_settings()
+    segs <- segs_all()
+    req(s, segs)
+    vals <- segs$value
+    is_cont <- attr_is_continuous(vals, threshold = 12)
     
-    segs <- make_segments(mv_subset, s$attr)
-    validate(need(nrow(segs) > 0, "No line segments for selected animals."))
-    
-    vals_locked <- sf::st_drop_geometry(mv_subset)[[s$attr]]
-    n_unique <- length(unique(stats::na.omit(vals_locked)))
-    is_cont_locked <- is.numeric(vals_locked) || inherits(vals_locked, "units") || n_unique > 10
-    
-    if (is_cont_locked) {
+    if (is_cont) {
       low  <- if (is.null(s$col_low))  "yellow" else s$col_low
       high <- if (is.null(s$col_high)) "blue"   else s$col_high
-      rng  <- range(as.numeric(segs$value), na.rm = TRUE)
-      pal  <- colorNumeric(colorRampPalette(c(low, high))(256),
-                           domain = rng, na.color = NA)
-      color_selection <- ~pal(as.numeric(value))
-      legend_vals <- rng
+      rng  <- range(as.numeric(vals), na.rm = TRUE)
+      pal  <- colorNumeric(colorRampPalette(c(low, high))(256), domain = rng, na.color = NA)
+      list(pal = pal, legend_vals = rng, is_cont = TRUE)
     } else {
-      levs <- levels(factor(segs$value))
-      pname <- if (is.null(s$cat_pal)) "Set2" else s$cat_pal
+      # categorical
+      levs <- sort(unique(stats::na.omit(as.character(vals))))
+      pname <- if (is.null(s$cat_pal)) "Dark2" else s$cat_pal
+      
       cols <- if (tolower(pname) == "glasbey") {
         pals::glasbey(length(levs))
       } else {
         maxn <- RColorBrewer::brewer.pal.info[pname, "maxcolors"]
-        base <- RColorBrewer::brewer.pal(min(maxn, max(3, length(levs))), pname)
-        base[seq_len(length(levs))]
+        base <- RColorBrewer::brewer.pal(maxn, pname)
+        if (length(levs) <= maxn) {
+          base[seq_len(length(levs))]
+        } else {
+          colorRampPalette(base)(length(levs))
+        }
       }
+      
       pal <- colorFactor(cols, domain = levs, na.color = NA)
-      color_selection <- ~pal(as.character(value))
-      legend_vals <- levs
+      list(pal = pal, legend_vals = levs, is_cont = FALSE)
+    }
+  })
+  
+  # build a leaflet map 
+  leaflet_map <- function(track_id = NULL) {
+    s <- locked_settings()
+    segs <- segs_all()
+    pinfo <- pal_info()
+    req(s, segs, pinfo)
+    
+    # filter by track for multipanel
+    if (!is.null(track_id)) {
+      segs <- segs[segs$track == track_id, , drop = FALSE]
+      validate(need(nrow(segs) > 0, "No data for this animal."))
+    }
+    
+    color_selection <- if (pinfo$is_cont) {
+      ~pinfo$pal(as.numeric(value))
+    } else {
+      ~pinfo$pal(as.character(value))
     }
     
     bb <- as.vector(sf::st_bbox(segs))
-    m <- leaflet(options = leafletOptions(minZoom = 2)) %>%
+    m <- leaflet(options = leafletOptions(minZoom = 2, preferCanvas = TRUE)) %>%
       fitBounds(bb[1], bb[2], bb[3], bb[4])
     m <- base_map_fun(m, s$basemap)
     m %>%
@@ -271,13 +310,13 @@ server <- function(input, output, session) {
       addPolylines(data = segs,
                    weight = s$linesize,
                    opacity = s$linealpha,
-                   color  = color_selection) %>%
-      addLegend("bottomright", pal = pal, values = legend_vals,
+                   color  = color_selection,
+                   smoothFactor = 1) %>%
+      addLegend("topright", pal = pinfo$pal, values = pinfo$legend_vals,
                 title = s$attr, opacity = 1, className = "tiny-legend")
   }
   
-  
-  # Layout 
+  #### layout 
   output$maps_ui <- renderUI({
     s <- locked_settings()
     if (is.null(s)) return(div("Pleas Wait. It is Loading…"))
@@ -286,60 +325,43 @@ server <- function(input, output, session) {
       return(div(style="color:red; font-weight:700; padding:10px;",
                  "Please select one or more animals."))
     if (identical(s$panel_mode, "Single panel")) {
-      #return(leafletOutput("map_single", height = "85vh"))
-      return(  withSpinner( leafletOutput("map_single", height = "85vh"), type = 4, color = "blue",  size = 0.9  )  )
+      return(withSpinner(leafletOutput("map_single", height = "85vh"), type = 4, color = "blue", size = 0.9))
     }
     width <- 6
     cols <- lapply(seq_along(ids), function(i) {
       content <- tagList(
         tags$h5(paste("Animal:", ids[i]),
                 style = "text-align: center; margin-top: 5px; margin-bottom: 5px;"),
-        #leafletOutput(paste0("map_", ids[i]), height = "45vh")
-        withSpinner(leafletOutput(paste0("map_", ids[i]), height = "45vh"), type = 4,  color = "blue",  size = 0.9  )
+        withSpinner(leafletOutput(paste0("map_", ids[i]), height = "45vh"), type = 4, color = "blue", size = 0.9)
       )
       column(width, content)
     })
-    rows <- lapply(split(cols, ceiling(seq_along(cols) / 2)), function(chunk) {
-      do.call(fluidRow, chunk)
-    })
+    rows <- lapply(split(cols, ceiling(seq_along(cols) / 2)), function(chunk) do.call(fluidRow, chunk))
     tagList(rows)
   })
   
-  # Render maps 
   output$map_single <- renderLeaflet({
     validate(need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
-    leaflet_map(locked_mv())   
+    leaflet_map()
   })
   
   observe({
     s <- locked_settings()
     req(s, identical(s$panel_mode, "Multipanel"))
     ids <- s$animals; if (is.null(ids) || length(ids) == 0) return()
-    mv_all_locked <- locked_mv(); req(mv_all_locked)
     
     lapply(ids, function(id_i){
       local({
         id_loc <- id_i
         output[[paste0("map_", id_loc)]] <- renderLeaflet({
           validate(need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
-          mv_id <- mv_all_locked[as.character(mt_track_id(mv_all_locked)) == id_loc, ]
-          validate(need(nrow(mv_id) > 0, "No data for this animal."))
-          leaflet_map(mv_id)  
+          leaflet_map(track_id = id_loc)
         })
       })
     })
   })
   
-  
-  ###download part
-  
-  map_widget <- reactive({
-    req(locked_settings(), locked_mv())
-    leaflet_map(locked_mv())
-  })
-  
-  
-  #  HTML download
+  ### downloads
   output$save_html <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
@@ -350,27 +372,24 @@ server <- function(input, output, session) {
       shinybusy::show_modal_spinner(spin = "fading-circle", text = "Saving HTML…")
       on.exit(shinybusy::remove_modal_spinner(), add = TRUE)
       
-      s  <- locked_settings(); mv <- locked_mv(); req(s, mv)
+      s <- locked_settings(); req(s)
       
       if (!identical(s$panel_mode, "Multipanel")) {
-        htmlwidgets::saveWidget(leaflet_map(mv), file = file, selfcontained = TRUE)
+        htmlwidgets::saveWidget(leaflet_map(), file = file, selfcontained = TRUE)
         return(invisible())
       }
       
       ids <- s$animals; req(length(ids) > 0)
       td <- tempfile("tracks_html_"); dir.create(td)
       for (id in ids) {
-        mv_id <- mv[as.character(mt_track_id(mv)) == id, ]
-        if (nrow(mv_id) == 0) next
         out <- file.path(td, paste0(id, "_", Sys.Date(), ".html"))
-        htmlwidgets::saveWidget(leaflet_map(mv_id), file = out, selfcontained = TRUE, libdir = NULL)
+        htmlwidgets::saveWidget(leaflet_map(track_id = id), file = out, selfcontained = TRUE, libdir = NULL)
       }
       files <- list.files(td, pattern = "\\.html$", recursive = FALSE)
       zip::zipr(zipfile = file, files = files, root = td)
     }
   )
   
-  #  PNG download
   output$save_png <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
@@ -381,24 +400,24 @@ server <- function(input, output, session) {
       shinybusy::show_modal_spinner(spin = "fading-circle", text = "Saving PNG…")
       on.exit(shinybusy::remove_modal_spinner(), add = TRUE)
       
-      s  <- locked_settings(); mv <- locked_mv(); req(s, mv)
+      s <- locked_settings(); req(s)
       
+      # single
       if (!identical(s$panel_mode, "Multipanel")) {
         tf  <- tempfile(fileext = ".html")
-        htmlwidgets::saveWidget(leaflet_map(mv), tf, selfcontained = TRUE, libdir = NULL)
+        htmlwidgets::saveWidget(leaflet_map(), tf, selfcontained = TRUE, libdir = NULL)
         url <- if (.Platform$OS.type == "windows")
           paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
         webshot2::webshot(url, file, vwidth = 1400, vheight = 900, delay = 1)
         return(invisible())
       }
       
+      # multi
       ids <- s$animals; req(length(ids) > 0)
       td <- tempfile("tracks_png_"); dir.create(td)
       for (id in ids) {
-        mv_id <- mv[as.character(mt_track_id(mv)) == id, ]
-        if (nrow(mv_id) == 0) next
         tf  <- tempfile(fileext = ".html")
-        htmlwidgets::saveWidget(leaflet_map(mv_id), tf, selfcontained = TRUE, libdir = NULL)
+        htmlwidgets::saveWidget(leaflet_map(track_id = id), tf, selfcontained = TRUE, libdir = NULL)
         url <- if (.Platform$OS.type == "windows")
           paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
         out <- file.path(td, paste0(id, "_", Sys.Date(), ".png"))
@@ -408,10 +427,6 @@ server <- function(input, output, session) {
       zip::zipr(zipfile = file, files = files, root = td)
     }
   )
-  
-  
-  
-  
 }
 
 shinyApp(ui, server)
