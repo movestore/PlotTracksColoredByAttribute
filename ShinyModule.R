@@ -12,8 +12,8 @@ library(webshot2)
 library(zip)
 library(shinybusy)
 
-my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
-#my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
+#my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
+my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
 ########### helpers
 
@@ -65,22 +65,35 @@ base_map_fun <- function(map, basemap) {
 }
 
 
+##helper 4: legend for categorical attributes
+add_cat_legend <- function(map, title, labels, colors, position = "topright") {
+  stopifnot(length(labels) == length(colors))
+  rows <- paste0(
+    mapply(function(col, lab) {
+      sprintf(
+        "<div style='display:flex;align-items:center;margin:2px 0;'>
+           <span style='display:inline-block;width:14px;height:14px;background:%s;
+                        border:1px solid rgba(0,0,0,0.25);margin-right:6px;'></span>
+           <span>%s</span>
+         </div>",
+        col, htmltools::htmlEscape(lab)
+      )
+    }, colors, labels),
+    collapse = ""
+  )
+  box <- sprintf(
+    "<div style='background:transparent;padding:6px 8px;border-radius:1px;font-size:11px;'>
+       <div style='font-weight:600;margin-bottom:4px;'>%s</div>%s
+     </div>",
+    htmltools::htmlEscape(title), rows
+  )
+  leaflet::addControl(map, html = box, position = position)
+}
 
 ####### UI 
 ui <- fluidPage(
   titlePanel("Tracks colored by attribute"),
-  tags$style(HTML("
-  .tiny-legend { font-size: 11px !important; line-height: 1.1; }
-  
-  .tiny-legend i {
-    width: 14px !important;
-    height: 14px !important;
-    display: inline-block !important;
-    margin-right: 6px !important;
-    opacity: 1 !important;               
-    border: 1px solid rgba(0,0,0,0.25);   
-  }
-")),
+
   sidebarLayout(
     sidebarPanel(width = 4,
                  h4("Animals"),
@@ -101,7 +114,7 @@ ui <- fluidPage(
                  h4("Attribute"),
                  selectInput("attr", NULL, choices = NULL),
                  div(id = "attr-type-msg", tags$small(textOutput("attr_info"), style = "color:darkblue;")),
-                 h6("Note: Numeric attributes with fewer than 12 unique values are consider as categorical."),
+                 h6("Note: Numeric attributes with fewer than 12 unique values are considered as categorical."),
                  h4("Colors"),
                  uiOutput("ui_color_controls"),
                  hr(),
@@ -278,7 +291,7 @@ server <- function(input, output, session) {
       }
       
       pal <- colorFactor(cols, domain = levs, na.color = NA)
-      list(pal = pal, legend_vals = levs, is_cont = FALSE)
+      list(pal = pal, legend_vals = levs, cols = cols, is_cont = FALSE)
     }
   })
   
@@ -289,7 +302,7 @@ server <- function(input, output, session) {
     pinfo <- pal_info()
     req(s, segs, pinfo)
     
-    # filter by track for multipanel
+    # subset for multipanel
     if (!is.null(track_id)) {
       segs <- segs[segs$track == track_id, , drop = FALSE]
       validate(need(nrow(segs) > 0, "No data for this animal."))
@@ -305,16 +318,21 @@ server <- function(input, output, session) {
     m <- leaflet(options = leafletOptions(minZoom = 2, preferCanvas = TRUE)) %>%
       fitBounds(bb[1], bb[2], bb[3], bb[4])
     m <- base_map_fun(m, s$basemap)
-    m %>%
+    
+    m <- m %>%
       addScaleBar(position = "topleft") %>%
-      addPolylines(data = segs,
-                   weight = s$linesize,
-                   opacity = s$linealpha,
-                   color  = color_selection,
-                   smoothFactor = 1) %>%
-      addLegend("topright", pal = pinfo$pal, values = pinfo$legend_vals,
-                title = s$attr, opacity = 1, className = "tiny-legend")
+      addPolylines(data = segs, weight = s$linesize, opacity = s$linealpha, color  = color_selection, smoothFactor = 1)
+    
+    # add legend 
+    if (pinfo$is_cont) {
+      m <- m %>% addLegend("topright", pal = pinfo$pal, values = pinfo$legend_vals,title = s$attr, opacity = 1, className = "tiny-legend")
+    } else {
+      m <- add_cat_legend(m,title  = s$attr, labels = pinfo$legend_vals, colors = pinfo$cols, position = "topright")
+    }
+    
+    m
   }
+  
   
   #### layout 
   output$maps_ui <- renderUI({
@@ -405,7 +423,7 @@ server <- function(input, output, session) {
       # single
       if (!identical(s$panel_mode, "Multipanel")) {
         tf  <- tempfile(fileext = ".html")
-        htmlwidgets::saveWidget(leaflet_map(), tf, selfcontained = TRUE, libdir = NULL)
+        htmlwidgets::saveWidget(leaflet_map(), tf, selfcontained = TRUE)
         url <- if (.Platform$OS.type == "windows")
           paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
         webshot2::webshot(url, file, vwidth = 1400, vheight = 900, delay = 1)
@@ -417,7 +435,7 @@ server <- function(input, output, session) {
       td <- tempfile("tracks_png_"); dir.create(td)
       for (id in ids) {
         tf  <- tempfile(fileext = ".html")
-        htmlwidgets::saveWidget(leaflet_map(track_id = id), tf, selfcontained = TRUE, libdir = NULL)
+        htmlwidgets::saveWidget(leaflet_map(track_id = id), tf, selfcontained = TRUE)
         url <- if (.Platform$OS.type == "windows")
           paste0("file:///", gsub("\\\\", "/", normalizePath(tf))) else tf
         out <- file.path(td, paste0(id, "_", Sys.Date(), ".png"))
