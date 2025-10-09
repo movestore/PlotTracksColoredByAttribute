@@ -10,7 +10,7 @@
 8. (done) provide the possibility to download the visualization as a png, html, etc, for the user to included in reports, manuscripts, presentations, etc and any other feature that seems useful that comes up on the way
 9. (not relevant with leaflet) make multipanel with aspect ratio==1, look into cowplot pkg - this is a very old comment, not sure if cowplot is the solution. Probably this will not anymore be a problem
 10. () Add the results to the move2 object. For example, add something like an attribute 'color' containing the hexadecimal code for the color and an attribute 'color-legend' containing the value used to define the color. This would allow the results to be saved as an RDS or passed on to a subsequent app to create a shapefile, kml, etc.
-11. (?) implement a color-reuse strategy for 100+ individuals (reuse non-adjacent colors to avoid confusion)
+11. (done) implement a color-reuse strategy for 100+ individuals (reuse non-adjacent colors to avoid confusion)
 
 ## nice to have
 1. () make it possible to color by 2 attributes, eg color by speed and sex. One idea would be e.g. to use shades of green to represents the speeds of males, shares of red for females and shades of blue for unknown/undefined. Or if it is speed and trackID, than each trackID gets the shades of another color.

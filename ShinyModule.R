@@ -11,8 +11,9 @@ library(htmlwidgets)
 library(webshot2)
 library(zip)
 library(shinybusy)
+library(grDevices)
 
-my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
+my_data <- readRDS("./data/raw/input3_move2loc_LatLon.rds")
 #my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
 ########### helpers
@@ -90,10 +91,34 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
   leaflet::addControl(map, html = box, position = position)
 }
 
+
+
+# helper 5: If n > length(pal), generate n HCL well-separated colors
+
+safe_reuse <- function(pal, n, step = 11, offset = 0) {
+  if (n <= 0) return(character(0))
+  m <- length(pal)
+  
+  if (m == 0 || n > m) {
+    golden <- 137.50776405003785  
+    hues   <- (as.numeric(offset) + (0:(n - 1)) * golden) %% 360
+    return(hcl(h = hues, c = 65, l = 60))
+  }
+  
+  # avoid adjacency when having enough colors
+  step <- max(1L, as.integer(step))
+  idx  <- ((as.integer(offset) + (0:(n - 1)) * step) %% m) + 1L
+  pal[idx]
+}
+
+
+
+
+
 ####### UI 
 ui <- fluidPage(
   titlePanel("Tracks colored by attribute"),
-
+  
   sidebarLayout(
     sidebarPanel(width = 4,
                  h4("Animals"),
@@ -102,21 +127,26 @@ ui <- fluidPage(
                    column(6, actionButton("select_all_animals", "Select All Animals", class = "btn-sm")),
                    column(6, actionButton("unselect_animals", "Unselect All Animals", class = "btn-sm"))
                  ),
+                 
                  h4("Display"),
                  radioButtons("panel_mode", NULL,
                               choices = c("Single panel","Multipanel"),
                               selected = "Single panel", inline = TRUE),
+                 
                  h4("Base map"),
                  radioButtons("basemap", NULL,
                               choices  = c("OpenStreetMap", "TopoMap", "Aerial"),
                               selected = "OpenStreetMap", inline = TRUE),
                  hr(),
+                 
                  h4("Attribute"),
                  selectInput("attr", NULL, choices = NULL),
                  div(id = "attr-type-msg", tags$small(textOutput("attr_info"), style = "color:darkblue;")),
                  h6("Note: Numeric attributes with fewer than 12 unique values are considered as categorical."),
+                 
                  h4("Colors"),
                  uiOutput("ui_color_controls"),
+                 
                  hr(),
                  h4("Style"),
                  fluidRow(
@@ -124,8 +154,10 @@ ui <- fluidPage(
                    column(6, sliderInput("linealpha_att", "Transparency", min = 0, max = 1, value = 0.9, step = 0.05))
                  ),
                  hr(),
+                 
                  actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block"),
                  hr(),
+                 
                  h4("Download:"),
                  fluidRow(
                    column(6, downloadButton("save_html","Download as HTML", class = "btn-sm")),
@@ -259,6 +291,8 @@ server <- function(input, output, session) {
     segs
   })
   
+  
+  
   # palette for locked selection
   pal_info <- reactive({
     s <- locked_settings()
@@ -275,25 +309,30 @@ server <- function(input, output, session) {
       list(pal = pal, legend_vals = rng, is_cont = TRUE)
     } else {
       # categorical
-      levs <- sort(unique(stats::na.omit(as.character(vals))))
+      levs  <- sort(unique(stats::na.omit(as.character(vals))))
+      n     <- length(levs)
       pname <- if (is.null(s$cat_pal)) "Dark2" else s$cat_pal
       
-      cols <- if (tolower(pname) == "glasbey") {
-        pals::glasbey(length(levs))
+      if (tolower(pname) == "glasbey") {
+        base <- pals::glasbey(32)  
+        cols <- safe_reuse(base, n, step = 11)     
       } else {
         maxn <- RColorBrewer::brewer.pal.info[pname, "maxcolors"]
         base <- RColorBrewer::brewer.pal(maxn, pname)
-        if (length(levs) <= maxn) {
-          base[seq_len(length(levs))]
+        if (n <= maxn) {
+          cols <- base[seq_len(n)]
         } else {
-          colorRampPalette(base)(length(levs))
+          cols <- safe_reuse(base, n, step = 11)   
         }
       }
       
       pal <- colorFactor(cols, domain = levs, na.color = NA)
       list(pal = pal, legend_vals = levs, cols = cols, is_cont = FALSE)
+      
+      
     }
   })
+  
   
   # build a leaflet map 
   leaflet_map <- function(track_id = NULL) {
