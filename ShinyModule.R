@@ -93,26 +93,25 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
 
 
 
-# helper 5: If n > length(pal), generate n HCL well-separated colors
-
-safe_reuse <- function(pal, n, step = 11, offset = 0) {
+# helper 5:  generate HCL colors
+ 
+color_generator <- function(pal, n, step = NULL) {
   if (n <= 0) return(character(0))
   m <- length(pal)
   
+  # If palette not long enough generate n colors
   if (m == 0 || n > m) {
-    golden <- 137.50776405003785  
-    hues   <- (as.numeric(offset) + (0:(n - 1)) * golden) %% 360
+    golden <- 137.50776405003785
+    hues   <- ((0:(n - 1)) * golden) %% 360
     return(hcl(h = hues, c = 65, l = 60))
   }
   
-  # avoid adjacency when having enough colors
+  # Otherwise avoid adjacent colors
+  if (is.null(step)) step <- max(3L, as.integer(round(m / 4)))
   step <- max(1L, as.integer(step))
-  idx  <- ((as.integer(offset) + (0:(n - 1)) * step) %% m) + 1L
+  idx  <- ((0:(n - 1)) * step) %% m + 1L
   pal[idx]
 }
-
-
-
 
 
 ####### UI 
@@ -314,16 +313,16 @@ server <- function(input, output, session) {
       pname <- if (is.null(s$cat_pal)) "Dark2" else s$cat_pal
       
       if (tolower(pname) == "glasbey") {
-        base <- pals::glasbey(32)  
-        cols <- safe_reuse(base, n, step = 11)     
+        base <- pals::glasbey(32)
       } else {
         maxn <- RColorBrewer::brewer.pal.info[pname, "maxcolors"]
         base <- RColorBrewer::brewer.pal(maxn, pname)
-        if (n <= maxn) {
-          cols <- base[seq_len(n)]
-        } else {
-          cols <- safe_reuse(base, n, step = 11)   
-        }
+      }
+      
+      if (n <= length(base)) {
+        cols <- base[seq_len(n)]
+      } else {
+        cols <- color_generator(base, n)
       }
       
       pal <- colorFactor(cols, domain = levs, na.color = NA)
