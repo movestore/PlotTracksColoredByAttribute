@@ -14,19 +14,19 @@ library(shinybusy)
 library(grDevices)
 
 my_data <- readRDS("./data/raw/input3_move2loc_LatLon.rds")
-#my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
+# my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
 
 ########### helpers
 
-##helper 1: attribute type
+## helper 1: attribute type
 attr_is_continuous <- function(vals, threshold = 12) {
   is_num <- is.numeric(vals) || inherits(vals, "units")
-  if (!is_num) return(FALSE)  #categorical
+  if (!is_num) return(FALSE)  # categorical
   n_unique <- length(unique(stats::na.omit(as.numeric(vals))))
-  n_unique > threshold        #  continuous
+  n_unique > threshold        # continuous
 }
 
-##helper2: making segments
+## helper 2: making segments
 make_segments <- function(tracks, attr_name, threshold = 12) {
   if (nrow(tracks) < 2) {
     return(sf::st_sf(track = character(0),
@@ -54,7 +54,7 @@ make_segments <- function(tracks, attr_name, threshold = 12) {
   sf::st_sf(track = seg_track, value = seg_val, geometry = segs[same_track_next])
 }
 
-##helper 3: selecting base map
+## helper 3: selecting base map
 base_map_fun <- function(map, basemap) {
   if (identical(basemap, "TopoMap")) {
     addProviderTiles(map, "Esri.WorldTopoMap")
@@ -65,8 +65,7 @@ base_map_fun <- function(map, basemap) {
   }
 }
 
-
-##helper 4: legend for categorical attributes
+## helper 4: legend for categorical attributes
 add_cat_legend <- function(map, title, labels, colors, position = "topright") {
   stopifnot(length(labels) == length(colors))
   rows <- paste0(
@@ -91,10 +90,7 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
   leaflet::addControl(map, html = box, position = position)
 }
 
-
-
-# helper 5:  generate HCL colors
- 
+# helper 5: generate HCL colors
 color_generator <- function(pal, n, step = NULL) {
   if (n <= 0) return(character(0))
   m <- length(pal)
@@ -112,7 +108,6 @@ color_generator <- function(pal, n, step = NULL) {
   idx  <- ((0:(n - 1)) * step) %% m + 1L
   pal[idx]
 }
-
 
 ####### UI 
 ui <- fluidPage(
@@ -152,8 +147,12 @@ ui <- fluidPage(
                    column(6, numericInput("linesize_att", "Line width", 3, min = 1, max = 10, step = 1)),
                    column(6, sliderInput("linealpha_att", "Transparency", min = 0, max = 1, value = 0.9, step = 0.05))
                  ),
-                 hr(),
                  
+                 # Option to attach color columns to the data returned to other parts of the app
+                 h6("Optional: include the map colors in your data for next use in other apps."),
+                 checkboxInput("attach_colors", "Add columns: color (hex) and color_legend", value = FALSE ),
+                 
+                 hr(),
                  actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block"),
                  hr(),
                  
@@ -161,7 +160,12 @@ ui <- fluidPage(
                  fluidRow(
                    column(6, downloadButton("save_html","Download as HTML", class = "btn-sm")),
                    column(6, downloadButton("save_png", "Save Map as PNG", class = "btn-sm"))
-                 )
+                 ),
+                 
+                 #### TEST-start
+                 hr(),
+                 downloadButton("dl_colors_csv", "Download colors CSV (test)")
+                 #### TEST  — end
     ),
     mainPanel(uiOutput("maps_ui"))
   )
@@ -173,6 +177,7 @@ server <- function(input, output, session) {
   # Locked so that only change on clicking on button
   locked_settings <- reactiveVal(NULL)
   locked_mv       <- reactiveVal(NULL)
+  locked_attach   <- reactiveVal(FALSE)
   
   # keep tracks with at least 2 
   mv_all <- reactive({
@@ -231,6 +236,7 @@ server <- function(input, output, session) {
         col_high  = input$col_high,
         cat_pal   = input$cat_pal
       ))
+      locked_attach(isTRUE(input$attach_colors)) 
     }
   })
   
@@ -248,6 +254,7 @@ server <- function(input, output, session) {
       col_high  = input$col_high,
       cat_pal   = input$cat_pal
     ))
+    locked_attach(isTRUE(input$attach_colors))
   }, ignoreInit = TRUE)
   
   attribute_type_live <- reactive({
@@ -269,10 +276,10 @@ server <- function(input, output, session) {
     if (isTRUE(at$is_cont)) {
       tagList(
         fluidRow(
-          column(6, colourInput("col_low",  "Low",
-                                if (is.null(isolate(input$col_low)))  "yellow" else isolate(input$col_low))),
-          column(6, colourInput("col_high", "High",
-                                if (is.null(isolate(input$col_high))) "blue"   else isolate(input$col_high)))
+          column(6, colourpicker::colourInput("col_low",  "Low",
+                                              if (is.null(isolate(input$col_low)))  "yellow" else isolate(input$col_low))),
+          column(6, colourpicker::colourInput("col_high", "High",
+                                              if (is.null(isolate(input$col_high))) "blue"   else isolate(input$col_high)))
         )
       )
     } else {
@@ -290,8 +297,6 @@ server <- function(input, output, session) {
     segs
   })
   
-  
-  
   # palette for locked selection
   pal_info <- reactive({
     s <- locked_settings()
@@ -303,7 +308,11 @@ server <- function(input, output, session) {
     if (is_cont) {
       low  <- if (is.null(s$col_low))  "yellow" else s$col_low
       high <- if (is.null(s$col_high)) "blue"   else s$col_high
-      rng  <- range(as.numeric(vals), na.rm = TRUE)
+      
+      # Use full locked dataset for domain so nothing is NA due to range
+      all_vals <- as.numeric(sf::st_drop_geometry(locked_mv())[[s$attr]])
+      rng      <- range(all_vals, na.rm = TRUE)
+      
       pal  <- colorNumeric(colorRampPalette(c(low, high))(256), domain = rng, na.color = NA)
       list(pal = pal, legend_vals = rng, is_cont = TRUE)
     } else {
@@ -327,11 +336,29 @@ server <- function(input, output, session) {
       
       pal <- colorFactor(cols, domain = levs, na.color = NA)
       list(pal = pal, legend_vals = levs, cols = cols, is_cont = FALSE)
-      
-      
     }
   })
   
+  ### add color column and color_legend_attr to data
+  mv_with_colors <- reactive({
+    s <- locked_settings()
+    mv <- locked_mv()
+    p  <- pal_info()
+    req(s, mv, p)
+    
+    vals <- sf::st_drop_geometry(mv)[[s$attr]]
+    hex  <- if (p$is_cont) p$pal(as.numeric(vals)) else p$pal(as.character(vals))
+    
+    mv$color <- as.character(hex)
+    cname <- paste0("color_legend_", s$attr)
+    mv[[cname]] <- vals
+    mv
+  })
+  
+  # If the checkbox is ticked, it includes the two new columns.
+  mv_current <- reactive({
+    if (isTRUE(locked_attach())) mv_with_colors() else locked_mv()
+  })
   
   # build a leaflet map 
   leaflet_map <- function(track_id = NULL) {
@@ -363,19 +390,18 @@ server <- function(input, output, session) {
     
     # add legend 
     if (pinfo$is_cont) {
-      m <- m %>% addLegend("topright", pal = pinfo$pal, values = pinfo$legend_vals,title = s$attr, opacity = 1, className = "tiny-legend")
+      m <- m %>% addLegend("topright", pal = pinfo$pal, values = pinfo$legend_vals, title = s$attr, opacity = 1, className = "tiny-legend")
     } else {
-      m <- add_cat_legend(m,title  = s$attr, labels = pinfo$legend_vals, colors = pinfo$cols, position = "topright")
+      m <- add_cat_legend(m, title  = s$attr, labels = pinfo$legend_vals, colors = pinfo$cols, position = "topright")
     }
     
     m
   }
   
-  
   #### layout 
   output$maps_ui <- renderUI({
     s <- locked_settings()
-    if (is.null(s)) return(div("Pleas Wait. It is Loading…"))
+    if (is.null(s)) return(div("Loading…"))
     ids <- s$animals
     if (is.null(ids) || length(ids) == 0)
       return(div(style="color:red; font-weight:700; padding:10px;",
@@ -396,6 +422,7 @@ server <- function(input, output, session) {
     tagList(rows)
   })
   
+  ## single panel
   output$map_single <- renderLeaflet({
     validate(need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
     leaflet_map()
@@ -417,7 +444,9 @@ server <- function(input, output, session) {
     })
   })
   
-  ### downloads
+  ###### downloads part ######
+  
+  # download map as html
   output$save_html <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
@@ -446,6 +475,7 @@ server <- function(input, output, session) {
     }
   )
   
+  # download map as png
   output$save_png <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
@@ -483,6 +513,26 @@ server <- function(input, output, session) {
       zip::zipr(zipfile = file, files = files, root = td)
     }
   )
+  
+  #### TEST  — CSV of color columns ####
+  output$dl_colors_csv <- downloadHandler(
+    filename = function() paste0("colors_", Sys.Date(), ".csv"),
+    content  = function(file) {
+      s  <- locked_settings(); req(s)
+      mv <- mv_with_colors();  req(mv)
+      cname <- paste0("color_legend_", s$attr)
+      df <- data.frame(
+        track_id  = as.character(mt_track_id(mv)),
+        color_hex = as.character(mv$color),
+        stringsAsFactors = FALSE
+      )
+      df[[cname]] <- sf::st_drop_geometry(mv)[[cname]]
+      df <- df[, c("track_id", "color_hex", cname)]
+      df <- unique(df)
+      utils::write.csv(df, file, row.names = FALSE)
+    }
+  )
+  #### TEST end ####
 }
 
 shinyApp(ui, server)
