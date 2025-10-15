@@ -19,7 +19,7 @@ my_data <- readRDS("./data/raw/input3_move2loc_LatLon.rds")
 ########### helpers
 
 ## helper 1: attribute type
-attr_is_continuous <- function(vals, threshold = 12) {
+continuous_attr <- function(vals, threshold = 12) {
   is_num <- is.numeric(vals) || inherits(vals, "units")
   if (!is_num) return(FALSE)  # categorical
   n_unique <- length(unique(stats::na.omit(as.numeric(vals))))
@@ -35,7 +35,7 @@ make_segments <- function(tracks, attr_name, threshold = 12) {
   }
   segs <- mt_segments(tracks)
   id   <- as.character(mt_track_id(tracks))
-  vals <- sf::st_drop_geometry(tracks)[[attr_name]]
+  vals <- sf::st_drop_geometry(tracks)[[attr_name]]  #Extracts attribute
   
   same_track_next <- c(id[-length(id)] == id[-1], FALSE)
   if (!any(same_track_next)) {
@@ -44,7 +44,8 @@ make_segments <- function(tracks, attr_name, threshold = 12) {
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
   }
   
-  if (attr_is_continuous(vals, threshold = threshold)) {
+  ##continuous: 
+  if (continuous_attr(vals, threshold = threshold)) {
     v <- as.numeric(vals)
     seg_val <- (v[same_track_next] + v[which(same_track_next) + 1]) / 2
   } else {
@@ -262,7 +263,7 @@ server <- function(input, output, session) {
     mv <- mv_sel()
     if (is.null(mv) || nrow(mv) == 0) return(list(empty = TRUE, is_cont = TRUE))
     vals <- sf::st_drop_geometry(mv)[[input$attr]]
-    list(empty = FALSE, is_cont = attr_is_continuous(vals, threshold = 12))
+    list(empty = FALSE, is_cont = continuous_attr(vals, threshold = 12))
   })
   
   output$attr_info <- renderText({
@@ -303,7 +304,7 @@ server <- function(input, output, session) {
     segs <- segs_all()
     req(s, segs)
     vals <- segs$value
-    is_cont <- attr_is_continuous(vals, threshold = 12)
+    is_cont <- continuous_attr(vals, threshold = 12)
     
     if (is_cont) {
       low  <- if (is.null(s$col_low))  "yellow" else s$col_low
