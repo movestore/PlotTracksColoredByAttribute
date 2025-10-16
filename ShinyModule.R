@@ -13,9 +13,17 @@ library(zip)
 library(shinybusy)
 library(grDevices)
 
-my_data <- readRDS("./data/raw/input3_move2loc_LatLon.rds")
-# my_data <- mt_as_move2(readRDS("./data/raw/input2_whitefgeese.rds"))
+#####work on checkbox!!!!!!!!
 
+
+my_data <- readRDS("./data/raw/input4_move2loc_LatLon.rds")
+#my_data <- readRDS("./data/raw/input4_move2loc_Mollweide.rds")
+
+#transfer to WGS84: standard GPS coordinate system if it is not
+
+if (!sf::st_is_longlat(my_data)) {
+  my_data <- sf::st_transform(my_data, 4326)
+}
 ########### helpers
 
 ## helper 1: attribute type
@@ -285,8 +293,8 @@ server <- function(input, output, session) {
       )
     } else {
       selectInput("cat_pal", "Palette",
-                  choices  = c("Set2","Set3","Dark2","Paired","Accent","Glasbey"),
-                  selected = if (is.null(isolate(input$cat_pal))) "Dark2" else isolate(input$cat_pal))
+                  choices  = c("Glasbey","Set2","Set3","Dark2","Paired","Accent"),
+                  selected = if (is.null(isolate(input$cat_pal))) "Glasbey" else isolate(input$cat_pal))
     }
   })
   
@@ -310,7 +318,7 @@ server <- function(input, output, session) {
       low  <- if (is.null(s$col_low))  "yellow" else s$col_low
       high <- if (is.null(s$col_high)) "blue"   else s$col_high
       
-      # Use full locked dataset for domain so nothing is NA due to range
+      # Use full locked dataset 
       all_vals <- as.numeric(sf::st_drop_geometry(locked_mv())[[s$attr]])
       rng      <- range(all_vals, na.rm = TRUE)
       
@@ -320,7 +328,7 @@ server <- function(input, output, session) {
       # categorical
       levs  <- sort(unique(stats::na.omit(as.character(vals))))
       n     <- length(levs)
-      pname <- if (is.null(s$cat_pal)) "Dark2" else s$cat_pal
+      pname <- if (is.null(s$cat_pal)) "Glasbey" else s$cat_pal
       
       if (tolower(pname) == "glasbey") {
         base <- pals::glasbey(32)
@@ -519,8 +527,11 @@ server <- function(input, output, session) {
   output$dl_colors_csv <- downloadHandler(
     filename = function() paste0("colors_", Sys.Date(), ".csv"),
     content  = function(file) {
-      s  <- locked_settings(); req(s)
-      mv <- mv_with_colors();  req(mv)
+      s  <- locked_settings()
+      req(s)
+      
+      mv <- mv_with_colors()  
+      req(mv)
       cname <- paste0("color_legend_", s$attr)
       df <- data.frame(
         track_id  = as.character(mt_track_id(mv)),
