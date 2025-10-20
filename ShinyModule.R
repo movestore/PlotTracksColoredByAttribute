@@ -383,13 +383,13 @@ server <- function(input, output, session) {
       segs <- segs %>%
         dplyr::mutate(
           .val = as.numeric(value),
-          .col = dplyr::if_else(is.finite(.val), pinfo$pal(.val), "#BDBDBD")  # light gray for NA
+          .col = dplyr::if_else(is.finite(.val), pinfo$pal(.val), "lightgray")  # light gray for NA
         )
     } else {
       segs <- segs %>%
         dplyr::mutate(
           .val = as.character(value),
-          .col = dplyr::if_else(is.na(.val), "#BDBDBD", pinfo$pal(.val))      # light gray only if truly NA
+          .col = dplyr::if_else(is.na(.val), "lightgray", pinfo$pal(.val))      # light gray only if truly NA
         )
     }
     
