@@ -13,7 +13,6 @@ library(zip)
 library(shinybusy)
 library(grDevices)
 
-#####work on checkbox!!!!!!!!
 
 my_data <- readRDS("./data/raw/input4_move2loc_LatLon.rds")
 # my_data <- readRDS("./data/raw/input4_move2loc_Mollweide.rds")
@@ -162,7 +161,10 @@ ui <- fluidPage(
                  
                  #### TEST-start
                  hr(),
-                 downloadButton("dl_colors_csv", "Download colors CSV (test)")
+                 downloadButton("dl_colors_csv", "Download colors CSV (test)"),
+                 hr(),
+                 uiOutput("dl_colors_msg")
+                 
                  #### TEST  — end
     ),
     mainPanel(uiOutput("maps_ui"))
@@ -353,10 +355,15 @@ server <- function(input, output, session) {
     mv
   })
   
-  # If the checkbox is ticked, it includes the two new columns.
-  mv_current <- reactive({
-    if (isTRUE(locked_attach())) mv_with_colors() else locked_mv()
+  # Build move2 object for the next app
+  mv_for_next_app <- eventReactive(input$apply_btn, {
+    if (isTRUE(locked_attach())) mv_with_colors() else NULL
+  }, ignoreInit = TRUE)
+  
+  observeEvent(mv_for_next_app(), {
+    session$userData$mv_next <- mv_for_next_app  
   })
+  
   
   # build a leaflet map
   leaflet_map <- function(track_id = NULL) {
@@ -372,11 +379,20 @@ server <- function(input, output, session) {
     }
     
     # light gray for NA
-    segs <- segs %>%
-      dplyr::mutate(
-        .val = as.numeric(value),
-        .col = dplyr::if_else(is.finite(.val), pinfo$pal(.val), "#BDBDBD")
-      )
+    if (pinfo$is_cont) {
+      segs <- segs %>%
+        dplyr::mutate(
+          .val = as.numeric(value),
+          .col = dplyr::if_else(is.finite(.val), pinfo$pal(.val), "#BDBDBD")  # light gray for NA
+        )
+    } else {
+      segs <- segs %>%
+        dplyr::mutate(
+          .val = as.character(value),
+          .col = dplyr::if_else(is.na(.val), "#BDBDBD", pinfo$pal(.val))      # light gray only if truly NA
+        )
+    }
+    
     
     bb <- as.vector(sf::st_bbox(segs))
     m <- leaflet(options = leafletOptions(minZoom = 2, preferCanvas = TRUE)) %>%
@@ -571,15 +587,26 @@ server <- function(input, output, session) {
     }
   )
   
-  #### TEST  — CSV of color columns ####
+  #### TEST  — CSV of color columns ##############
   output$dl_colors_csv <- downloadHandler(
     filename = function() paste0("colors_", Sys.Date(), ".csv"),
     content  = function(file) {
-      s  <- locked_settings()
-      req(s)
       
-      mv <- mv_with_colors()
-      req(mv)
+      if (is.null(mv_for_next_app())) {
+        output$dl_colors_msg <- renderUI(
+          div(
+            style = "color:#c62828; font-weight:600; margin-top:6px;",
+            HTML('Please check <em>“Add columns: color (hex) and color_legend”</em> and click <u>Apply Changes</u> before downloading.')
+          )
+        )
+        stop("Download blocked: colors not attached (checkbox not applied).")
+      }
+      
+      output$dl_colors_msg <- renderUI(NULL)
+      
+      s  <- locked_settings(); req(s)
+      mv <- mv_for_next_app(); req(!is.null(mv))
+      
       cname <- paste0("color_legend_", s$attr)
       df <- data.frame(
         track_id  = as.character(mt_track_id(mv)),
@@ -587,12 +614,13 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
       df[[cname]] <- sf::st_drop_geometry(mv)[[cname]]
-      df <- df[, c("track_id", "color_hex", cname)]
-      df <- unique(df)
+      df <- unique(df[, c("track_id", "color_hex", cname)])
       utils::write.csv(df, file, row.names = FALSE)
     }
   )
-  #### TEST end ####
+  #### TEST end #####################
+  
+  
 }
 
 shinyApp(ui, server)

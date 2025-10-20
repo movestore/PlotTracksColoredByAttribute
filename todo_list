@@ -13,5 +13,5 @@
 11. (done) implement a color-reuse strategy for 100+ individuals (reuse non-adjacent colors to avoid confusion)
 
 ## nice to have
-1. () make it possible to color by 2 attributes, eg color by speed and sex. One idea would be e.g. to use shades of green to represents the speeds of males, shares of red for females and shades of blue for unknown/undefined. Or if it is speed and trackID, than each trackID gets the shades of another color.
+1. (done) make it possible to color by 2 attributes, eg color by speed and sex. One idea would be e.g. to use shades of green to represents the speeds of males, shares of red for females and shades of blue for unknown/undefined. Or if it is speed and trackID, than each trackID gets the shades of another color.
 2. (done) offer options to chose point symbol, line type, size, alpha. Not all options might be needed, giving to many options might be overwhelming, but some that make sense is good. Not sure how to go about this, I guess it just has to be tested and in relation to other options if it is overwhelming or not.
