@@ -15,15 +15,14 @@ library(grDevices)
 
 #####work on checkbox!!!!!!!!
 
-
 my_data <- readRDS("./data/raw/input4_move2loc_LatLon.rds")
-#my_data <- readRDS("./data/raw/input4_move2loc_Mollweide.rds")
+# my_data <- readRDS("./data/raw/input4_move2loc_Mollweide.rds")
 
-#transfer to WGS84: standard GPS coordinate system if it is not
-
+# transfer to WGS84: standard GPS coordinate system if it is not
 if (!sf::st_is_longlat(my_data)) {
   my_data <- sf::st_transform(my_data, 4326)
 }
+
 ########### helpers
 
 ## helper 1: attribute type
@@ -43,7 +42,7 @@ make_segments <- function(tracks, attr_name, threshold = 12) {
   }
   segs <- mt_segments(tracks)
   id   <- as.character(mt_track_id(tracks))
-  vals <- sf::st_drop_geometry(tracks)[[attr_name]]  #Extracts attribute
+  vals <- sf::st_drop_geometry(tracks)[[attr_name]]  # Extracts attribute
   
   same_track_next <- c(id[-length(id)] == id[-1], FALSE)
   if (!any(same_track_next)) {
@@ -52,29 +51,23 @@ make_segments <- function(tracks, attr_name, threshold = 12) {
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
   }
   
-  ##continuous: 
+  ## continuous:
   if (continuous_attr(vals, threshold = threshold)) {
     v <- as.numeric(vals)
-    seg_val <- (v[same_track_next] + v[which(same_track_next) + 1]) / 2
+    seg_val <- rowMeans(
+      cbind(v[same_track_next], v[which(same_track_next) + 1]),
+      na.rm = TRUE
+    )
+    seg_val[is.nan(seg_val)] <- NA_real_
+    
   } else {
-    seg_val <- as.character(vals[same_track_next])  # treat as categorical
+    seg_val <- as.character(vals[same_track_next])  # categorical
   }
   seg_track <- id[which(same_track_next)]
   sf::st_sf(track = seg_track, value = seg_val, geometry = segs[same_track_next])
 }
 
-## helper 3: selecting base map
-base_map_fun <- function(map, basemap) {
-  if (identical(basemap, "TopoMap")) {
-    addProviderTiles(map, "Esri.WorldTopoMap")
-  } else if (identical(basemap, "Aerial")) {
-    addProviderTiles(map, "Esri.WorldImagery")
-  } else {
-    addTiles(map)
-  }
-}
-
-## helper 4: legend for categorical attributes
+## helper 3: legend for categorical attributes
 add_cat_legend <- function(map, title, labels, colors, position = "topright") {
   stopifnot(length(labels) == length(colors))
   rows <- paste0(
@@ -99,7 +92,7 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
   leaflet::addControl(map, html = box, position = position)
 }
 
-# helper 5: generate HCL colors
+# helper 4: generate HCL colors
 color_generator <- function(pal, n, step = NULL) {
   if (n <= 0) return(character(0))
   m <- length(pal)
@@ -118,7 +111,7 @@ color_generator <- function(pal, n, step = NULL) {
   pal[idx]
 }
 
-####### UI 
+####### UI
 ui <- fluidPage(
   titlePanel("Tracks colored by attribute"),
   
@@ -133,13 +126,9 @@ ui <- fluidPage(
                  
                  h4("Display"),
                  radioButtons("panel_mode", NULL,
-                              choices = c("Single panel","Multipanel"),
+                              choices = c("Single panel", "Multipanel"),
                               selected = "Single panel", inline = TRUE),
                  
-                 h4("Base map"),
-                 radioButtons("basemap", NULL,
-                              choices  = c("OpenStreetMap", "TopoMap", "Aerial"),
-                              selected = "OpenStreetMap", inline = TRUE),
                  hr(),
                  
                  h4("Attribute"),
@@ -159,7 +148,7 @@ ui <- fluidPage(
                  
                  # Option to attach color columns to the data returned to other parts of the app
                  h6("Optional: include the map colors in your data for next use in other apps."),
-                 checkboxInput("attach_colors", "Add columns: color (hex) and color_legend", value = FALSE ),
+                 checkboxInput("attach_colors", "Add columns: color (hex) and color_legend", value = FALSE),
                  
                  hr(),
                  actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block"),
@@ -180,7 +169,7 @@ ui <- fluidPage(
   )
 )
 
-### server 
+### server
 server <- function(input, output, session) {
   
   # Locked so that only change on clicking on button
@@ -188,7 +177,7 @@ server <- function(input, output, session) {
   locked_mv       <- reactiveVal(NULL)
   locked_attach   <- reactiveVal(FALSE)
   
-  # keep tracks with at least 2 
+  # keep tracks with at least 2
   mv_all <- reactive({
     my_data %>%
       arrange(mt_track_id(), mt_time()) %>%
@@ -228,7 +217,7 @@ server <- function(input, output, session) {
       arrange(mt_track_id(), mt_time())
   })
   
-  # first time shows map 
+  # first time shows map
   observe({
     mv <- mv_sel()
     if (!is.null(input$attr) && nrow(mv) > 0 &&
@@ -237,7 +226,6 @@ server <- function(input, output, session) {
       locked_settings(list(
         animals   = input$animals,
         panel_mode= input$panel_mode,
-        basemap   = input$basemap,
         attr      = input$attr,
         linesize  = input$linesize_att,
         linealpha = input$linealpha_att,
@@ -245,7 +233,7 @@ server <- function(input, output, session) {
         col_high  = input$col_high,
         cat_pal   = input$cat_pal
       ))
-      locked_attach(isTRUE(input$attach_colors)) 
+      locked_attach(isTRUE(input$attach_colors))
     }
   })
   
@@ -255,7 +243,6 @@ server <- function(input, output, session) {
     locked_settings(list(
       animals   = input$animals,
       panel_mode= input$panel_mode,
-      basemap   = input$basemap,
       attr      = input$attr,
       linesize  = input$linesize_att,
       linealpha = input$linealpha_att,
@@ -318,9 +305,11 @@ server <- function(input, output, session) {
       low  <- if (is.null(s$col_low))  "yellow" else s$col_low
       high <- if (is.null(s$col_high)) "blue"   else s$col_high
       
-      # Use full locked dataset 
+      # Use full locked dataset
       all_vals <- as.numeric(sf::st_drop_geometry(locked_mv())[[s$attr]])
+      all_vals <- all_vals[is.finite(all_vals)]
       rng      <- range(all_vals, na.rm = TRUE)
+      
       
       pal  <- colorNumeric(colorRampPalette(c(low, high))(256), domain = rng, na.color = NA)
       list(pal = pal, legend_vals = rng, is_cont = TRUE)
@@ -369,7 +358,7 @@ server <- function(input, output, session) {
     if (isTRUE(locked_attach())) mv_with_colors() else locked_mv()
   })
   
-  # build a leaflet map 
+  # build a leaflet map
   leaflet_map <- function(track_id = NULL) {
     s <- locked_settings()
     segs <- segs_all()
@@ -382,32 +371,90 @@ server <- function(input, output, session) {
       validate(need(nrow(segs) > 0, "No data for this animal."))
     }
     
-    color_selection <- if (pinfo$is_cont) {
-      ~pinfo$pal(as.numeric(value))
-    } else {
-      ~pinfo$pal(as.character(value))
-    }
+    # light gray for NA
+    segs <- segs %>%
+      dplyr::mutate(
+        .val = as.numeric(value),
+        .col = dplyr::if_else(is.finite(.val), pinfo$pal(.val), "#BDBDBD")
+      )
     
     bb <- as.vector(sf::st_bbox(segs))
     m <- leaflet(options = leafletOptions(minZoom = 2, preferCanvas = TRUE)) %>%
-      fitBounds(bb[1], bb[2], bb[3], bb[4])
-    m <- base_map_fun(m, s$basemap)
-    
-    m <- m %>%
+      fitBounds(bb[1], bb[2], bb[3], bb[4]) %>%
+      addTiles(group = "OpenStreetMap") %>%
+      addProviderTiles("Esri.WorldTopoMap", group = "TopoMap") %>%
+      addProviderTiles("Esri.WorldImagery", group = "Aerial") %>%
+      addLayersControl(
+        baseGroups = c("OpenStreetMap", "TopoMap", "Aerial"),
+        options = layersControlOptions(collapsed = FALSE)
+      ) %>%
+      hideGroup("TopoMap") %>%
+      hideGroup("Aerial") %>%
       addScaleBar(position = "topleft") %>%
-      addPolylines(data = segs, weight = s$linesize, opacity = s$linealpha, color  = color_selection, smoothFactor = 1)
+      addPolylines(
+        data   = segs,
+        weight = s$linesize,
+        opacity= s$linealpha,
+        color  = ~.col,          
+        smoothFactor = 1
+      )
     
-    # add legend 
+    
+    # add legend
     if (pinfo$is_cont) {
-      m <- m %>% addLegend("topright", pal = pinfo$pal, values = pinfo$legend_vals, title = s$attr, opacity = 1, className = "tiny-legend")
+      vals <- as.numeric(sf::st_drop_geometry(locked_mv())[[s$attr]])
+      vals <- vals[is.finite(vals)]
+      if (!length(vals)) vals <- pinfo$legend_vals
+      
+      mn  <- min(vals, na.rm = TRUE)
+      mx  <- max(vals, na.rm = TRUE)
+      med <- median(vals, na.rm = TRUE)
+      mu  <- mean(vals, na.rm = TRUE)
+      
+      legend_tag <- htmltools::tags$div(
+        style = "background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:4px;font-size:11px;",
+        htmltools::tags$div(htmltools::htmlEscape(s$attr),
+                            style="font-weight:600;margin-bottom:4px;"),
+        htmltools::tags$div(style = paste0(
+          "width:220px;height:12px;background:linear-gradient(to right,",
+          pinfo$pal(mn), ",", pinfo$pal(mx),
+          ");border:1px solid rgba(0,0,0,0.25);margin-bottom:6px;"
+        )),
+        htmltools::tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.9;",
+                            htmltools::tags$span(sprintf('%.2f', mn)),
+                            htmltools::tags$span(sprintf('%.2f', med)),
+                            htmltools::tags$span(sprintf('%.2f', mu)),
+                            htmltools::tags$span(sprintf('%.2f', mx))
+        ),
+        htmltools::tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.7;",
+                            htmltools::tags$span("min"),
+                            htmltools::tags$span("median"),
+                            htmltools::tags$span("mean"),
+                            htmltools::tags$span("max")
+        ),
+        # show NA 
+        htmltools::tags$div(
+          style="margin-top:6px;display:flex;align-items:center;gap:6px;opacity:0.85;",
+          htmltools::tags$span(
+            style="display:inline-block;width:12px;height:12px;background:#BDBDBD;border:1px solid rgba(0,0,0,0.25);"
+          ),
+          htmltools::tags$span("no data (NA)")
+        )
+      
+      )
+      
+      m <- m %>% leaflet::addControl(html = as.character(legend_tag), position = "topright")
     } else {
-      m <- add_cat_legend(m, title  = s$attr, labels = pinfo$legend_vals, colors = pinfo$cols, position = "topright")
+      m <- add_cat_legend(m, title  = s$attr, labels = pinfo$legend_vals,
+                          colors = pinfo$cols, position = "topright")
     }
+    
+    
     
     m
   }
   
-  #### layout 
+  #### layout
   output$maps_ui <- renderUI({
     s <- locked_settings()
     if (is.null(s)) return(div("Loading…"))
@@ -530,7 +577,7 @@ server <- function(input, output, session) {
       s  <- locked_settings()
       req(s)
       
-      mv <- mv_with_colors()  
+      mv <- mv_with_colors()
       req(mv)
       cname <- paste0("color_legend_", s$attr)
       df <- data.frame(
