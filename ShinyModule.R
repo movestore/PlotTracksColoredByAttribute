@@ -386,6 +386,7 @@ server <- function(input, output, session) {
       addProviderTiles("Esri.WorldImagery", group = "Aerial") %>%
       addLayersControl(
         baseGroups = c("OpenStreetMap", "TopoMap", "Aerial"),
+        position = "topleft",
         options = layersControlOptions(collapsed = FALSE)
       ) %>%
       hideGroup("TopoMap") %>%
