@@ -13,7 +13,7 @@ library(zip)
 library(shinybusy)
 library(grDevices)
 library(htmltools)
-
+library(colorspace)
 
 my_data <- readRDS("./data/raw/input4_move2loc_LatLon.rds")
 # my_data <- readRDS("./data/raw/input4_move2loc_Mollweide.rds")
@@ -135,21 +135,16 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
 }
 
 # helper 6: shade a base color by weight- for cont in option2
-shade_hex <- function(base_hex, w, light_to_dark = TRUE) {  
-  if (!length(base_hex)) return(character(0))               
-  m <- t(grDevices::col2rgb(base_hex)) / 255                
-  if (light_to_dark) {                                      
-    rgb1 <- m * w + (1 - w)                                 
-    amt2 <- w * 0.6                                         
-    rgb2 <- (1 - amt2) * rgb1                               
-  } else {                                                  
-    rgb1 <- m * w                                           
-    amt2 <- w * 0.6                                         
-    rgb2 <- (1 - amt2) * rgb1 + amt2                        
-  }                                                         
-  rgb2[rgb2 < 0] <- 0; rgb2[rgb2 > 1] <- 1                 
-  grDevices::rgb(rgb2[,1], rgb2[,2], rgb2[,3])              
-}                                                           
+shade_hex <- function(base_hex, w, light_to_dark = TRUE) {
+  if (!length(base_hex)) return(character(0))
+  if (light_to_dark) {
+    colorspace::darken(base_hex, amount = w * 0.7)
+  } else {
+    colorspace::lighten(base_hex, amount = w * 0.9)
+  }
+}
+
+
 
 
 
@@ -164,8 +159,9 @@ ui <- fluidPage(
                    column(6, actionButton("select_all_animals", "Select All Animals", class = "btn-sm")),
                    column(6, actionButton("unselect_animals", "Unselect All Animals", class = "btn-sm"))
                  ),
-                 
+                 hr(),
                  h4("Attribute"),
+                 hr(),
                  radioButtons("attr_mode", NULL,
                               choices = c("Option 1: Color by 1 attribute", "Option 2: Color by 2 attributes"),
                               selected = "Option 1: Color by 1 attribute"),
@@ -173,10 +169,9 @@ ui <- fluidPage(
                  # Option 1
                  conditionalPanel(
                    condition = "input.attr_mode == 'Option 1: Color by 1 attribute'",
-                   h4("Attribute"),
                    selectInput("attr_1", NULL, choices = NULL),
                    div(tags$small("Note: Numeric attributes with fewer than 12 unique values are considered as categorical.",
-                                  style = "color: #333;")),
+                                  style = "color: darkblue;")),
                    uiOutput("ui_color_controls_opt1")
                  ),
                  

@@ -3,16 +3,16 @@
   "dependencies": {
     "R": [
       {
-        "name": "move"
+        "name": "move2"
       },
       {
         "name": "shiny"
       },
       {
-        "name": "ggplot2"
+        "name": "sf"
       },
       {
-        "name": "shinyWidgets"
+        "name": "dplyr"
       },
       {
         "name": "colourpicker"
@@ -21,23 +21,36 @@
         "name": "htmltools"
       },
       {
-        "name": "ggforce"
+        "name": "leaflet"
       },
       {
-        "name": "units"
+        "name": "RColorBrewer"
       },
       {
-        "name": "lubridate"
+        "name": "pals"
       },
       {
-        "name": "rnaturalearth"
+        "name": "shinycssloaders"
       },
       {
-        "name": "rnaturalearthdata"
+        "name": "htmlwidgets"
       },
       {
-        "name": "sf"
+        "name": "webshot2"
+      },
+      {
+        "name": "zip"
+      },
+      {
+        "name": "shinybusy"
+      },
+      {
+        "name": "grDevices"
+      },
+      {
+        "name": "colorspace"
       }
+      
     ]
   },
   "license": {
@@ -51,7 +64,8 @@
     "attribute",
     "shiny",
     "interactive",
-    "variables"
+    "variables",
+    "leaflet"
   ],
   "people": [
     {
@@ -61,6 +75,16 @@
       "email": "ascharf@ab.mpg.de",
       "roles": ["author", "creator"],
       "orcid": "0000-0002-3357-8533",
+      "affiliation": "Max-Planck-Institute of Animal Behavior",
+      "affiliationRor": "https://ror.org/026stee22"
+    },
+    {
+      "firstName": "Nafiseh",
+      "middleInitials": null,
+      "lastName": "Tavakol",
+      "email": "ntavakol@ab.mpg.de",
+      "roles": ["contributor"],
+      "orcid": "0000-0003-3674-4784",
       "affiliation": "Max-Planck-Institute of Animal Behavior",
       "affiliationRor": "https://ror.org/026stee22"
     }
