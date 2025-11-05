@@ -469,24 +469,34 @@ server <- function(input, output, session) {
       return(mv)
     } else {
       # 2 attributes
-      cat_vals  <- sf::st_drop_geometry(mv)[[s$cat_attr_2]]                 
-      cont_vals <- as.numeric(sf::st_drop_geometry(mv)[[s$cont_attr_2]])    
-      base_vec  <- sp$cat_legend[as.character(cat_vals)]                     
-      rng       <- sp$cont_range                                             
-      w <- if (isTRUE(is.finite(diff(rng))) && diff(rng) != 0) {             
-        pmin(1, pmax(0, (cont_vals - rng[1]) / (rng[2] - rng[1])))           
-      } else rep(0.5, length(cont_vals))                                     
-      hex <- rep("lightgray", length(base_vec))                                
-      ok  <- !is.na(base_vec) & is.finite(cont_vals)                         
-      if (any(ok)) {                                                         
-        hex[ok] <- shade_hex(                              
-          base_hex= base_vec[ok],                                       
-          w = w[ok],                                              
-          light_to_dark = identical(s$cont_pal_2, "Light to Dark")   )  } 
+      cat_vals  <- sf::st_drop_geometry(mv)[[s$cat_attr_2]]
+      cont_vals <- as.numeric(sf::st_drop_geometry(mv)[[s$cont_attr_2]])
+      base_vec  <- sp$cat_legend[as.character(cat_vals)]
+      rng       <- sp$cont_range
       
-      mv$color <- as.character(hex)                                          
-      mv[[paste0("color_legend_cat_",  s$cat_attr_2)]]  <- cat_vals          
-      mv[[paste0("color_legend_cont_", s$cont_attr_2)]] <- cont_vals         
+      w <- if (isTRUE(is.finite(diff(rng))) && diff(rng) != 0) {
+        pmin(1, pmax(0, (cont_vals - rng[1]) / (rng[2] - rng[1])))
+      } else rep(0.5, length(cont_vals))
+      
+      hex <- rep("lightgray", length(base_vec))
+      ok  <- !is.na(base_vec) & is.finite(cont_vals)
+      if (any(ok)) {
+        hex[ok] <- shade_hex(
+          base_hex      = base_vec[ok],
+          w             = w[ok],
+          light_to_dark = identical(s$cont_pal_2, "Light to Dark")
+        )
+      }
+      
+      mv$color <- as.character(hex)
+      
+      # --- NEW: single combined legend column ---
+      combo_colname <- paste0(s$cat_attr_2, "-", s$cont_attr_2)
+      cat_str  <- ifelse(is.na(cat_vals), "NA", as.character(cat_vals))
+      cont_str <- ifelse(is.finite(cont_vals), sprintf('%g', cont_vals), "NA")
+      mv[[combo_colname]] <- paste0(cat_str, "-", cont_str)
+      
+      
       return(mv)                                                             
     }
   })
@@ -695,6 +705,8 @@ server <- function(input, output, session) {
   })
   
   #  Downloads part
+  
+  #### html Downloads
   output$save_html <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
@@ -723,6 +735,8 @@ server <- function(input, output, session) {
     }
   )
   
+  
+  #### PNG Downloads
   output$save_png <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
@@ -793,16 +807,17 @@ server <- function(input, output, session) {
         df[[cname]] <- sf::st_drop_geometry(mv)[[cname]]             
         
       } else {
-        cat_col  <- paste0("color_legend_cat_",  s$cat_attr_2)       
-        cont_col <- paste0("color_legend_cont_", s$cont_attr_2)      
-        dd <- sf::st_drop_geometry(mv)                               
-        missing_cols <- setdiff(c(cat_col, cont_col), names(dd))     
-        if (length(missing_cols)) {
-          stop(sprintf("Missing legend columns: %s. Re-apply with 'Add columns...' checked.",
-                       paste(missing_cols, collapse = ", ")))        
+        combo_col <- paste0(s$cat_attr_2, "-", s$cont_attr_2)
+        dd <- sf::st_drop_geometry(mv)
+        
+        if (!combo_col %in% names(dd)) {
+          stop(sprintf(
+            "Missing legend column '%s'. Re-apply with 'Add columns...' checked.",
+            combo_col
+          ))
         }
-        df[[cat_col]]  <- dd[[cat_col]]                              
-        df[[cont_col]] <- dd[[cont_col]]                             
+        
+        df[[combo_col]] <- dd[[combo_col]]
       }
       
       df <- unique(df)
