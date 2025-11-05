@@ -145,9 +145,6 @@ shade_hex <- function(base_hex, w, light_to_dark = TRUE) {
 }
 
 
-
-
-
 ###############  UI  ################################# 
 ui <- fluidPage(
   titlePanel("Plot Tracks Colored by Attributes"),
@@ -561,12 +558,28 @@ server <- function(input, output, session) {
     
     # Option 1
     if (sp$mode == 1) {
-      if (sp$is_cont) { #continous
+      if (sp$is_cont) { # continuous
         
         vals <- as.numeric(sf::st_drop_geometry(locked_mv())[[sp$title]])
         vals <- vals[is.finite(vals)]
         if (!length(vals)) vals <- sp$legend_vals
-        mn  <- min(vals); mx <- max(vals); med <- median(vals); mu <- mean(vals)
+        
+        mn <- min(vals)
+        mx <- max(vals)
+        
+        # 3 ticks between min and max
+        ticks_all <- pretty(c(mn, mx), n = 5)
+        inner <- ticks_all[ticks_all > mn & ticks_all < mx]
+        
+        if (length(inner) >= 3) {
+          idx <- round(seq(1, length(inner), length.out = 3))
+          inner3 <- inner[idx]
+        } else {
+          inner3 <- seq(mn, mx, length.out = 5)[2:4]
+        }
+        
+        t1 <- inner3[1]; t2 <- inner3[2]; t3 <- inner3[3]
+        
         grad <- tags$div(
           style = "background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:4px;font-size:11px;",
           tags$div(htmlEscape(sp$title), style="font-weight:600;margin-bottom:4px;"),
@@ -575,22 +588,32 @@ server <- function(input, output, session) {
             sp$pal(mn), ",", sp$pal(mx),
             ");border:1px solid rgba(0,0,0,0.25);margin-bottom:6px;"
           )),
+          #  min, 3 ticks, max
           tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.9;",
                    tags$span(sprintf('%.2f', mn)),
-                   tags$span(sprintf('%.2f', med)),
-                   tags$span(sprintf('%.2f', mu)),
+                   tags$span(sprintf('%.2f', t1)),
+                   tags$span(sprintf('%.2f', t2)),
+                   tags$span(sprintf('%.2f', t3)),
                    tags$span(sprintf('%.2f', mx))),
+          # labels
           tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.7;",
-                   tags$span("min"), tags$span("median"),
-                   tags$span("mean"), tags$span("max")),
+                   tags$span("min"),
+                   tags$span(""),
+                   tags$span(""),
+                   tags$span(""),
+                   tags$span("max")),
           tags$div(style="margin-top:6px;display:flex;align-items:center;gap:6px;opacity:0.85;",
                    tags$span(style="display:inline-block;width:12px;height:12px;background:#BDBDBD;border:1px solid rgba(0,0,0,0.25);"),
                    tags$span("no data (NA)"))
         )
+        
         m <- leaflet::addControl(m, html = as.character(grad), position = "topright")
-      } else {  #categorical
+        
+      } else {
         m <- add_cat_legend(m, title = sp$title, labels = sp$legend_vals, colors = sp$cols, position = "topright")
       }
+
+    
     } else {
       # Option 2
       m <- add_cat_legend(m, title = sp$title_cat, labels = names(sp$cat_legend),
