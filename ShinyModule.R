@@ -580,9 +580,18 @@ server <- function(input, output, session) {
         
         t1 <- inner3[1]; t2 <- inner3[2]; t3 <- inner3[3]
         
+        # add unit to title
+        orig_vals <- sf::st_drop_geometry(locked_mv())[[sp$title]]
+        unit_str  <- if (inherits(orig_vals, "units")) units::deparse_unit(orig_vals) else NULL
+        title_txt <- if (!is.null(unit_str) && nzchar(unit_str)) {
+          paste0(sp$title, " (", unit_str, ")")
+        } else {
+          sp$title
+        }
+        
         grad <- tags$div(
           style = "background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:4px;font-size:11px;",
-          tags$div(htmlEscape(sp$title), style="font-weight:600;margin-bottom:4px;"),
+          tags$div(htmlEscape(title_txt), style="font-weight:600;margin-bottom:4px;"),
           tags$div(style = paste0(
             "width:220px;height:12px;background:linear-gradient(to right,",
             sp$pal(mn), ",", sp$pal(mx),
@@ -590,11 +599,13 @@ server <- function(input, output, session) {
           )),
           #  min, 3 ticks, max
           tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.9;",
-                   tags$span(sprintf('%.2f', mn)),
-                   tags$span(sprintf('%.2f', t1)),
-                   tags$span(sprintf('%.2f', t2)),
-                   tags$span(sprintf('%.2f', t3)),
-                   tags$span(sprintf('%.2f', mx))),
+                   tags$span(sprintf('%g', mn)),
+                   tags$span(sprintf('%g', t1)),
+                   tags$span(sprintf('%g', t2)),
+                   tags$span(sprintf('%g', t3)),
+                   tags$span(sprintf('%g', mx))),
+                   
+          
           # labels
           tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.7;",
                    tags$span("min"),
@@ -612,6 +623,8 @@ server <- function(input, output, session) {
       } else {
         m <- add_cat_legend(m, title = sp$title, labels = sp$legend_vals, colors = sp$cols, position = "topright")
       }
+      
+      
 
     
     } else {
