@@ -15,10 +15,11 @@ library(grDevices)
 library(htmltools)
 library(colorspace)
 
-my_data <- readRDS("./data/raw/input4_move2loc_LatLon.rds")
-# my_data <- readRDS("./data/raw/input4_move2loc_Mollweide.rds")
 
-#transfer to WGS84: standard GPS coordinate system if it is not
+my_data <- readRDS("./data/raw/input4_move2loc_LatLon.rds")
+#my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
+
+# transfer to WGS84 if needed
 if (!sf::st_is_longlat(my_data)) {
   my_data <- sf::st_transform(my_data, 4326)
 }
@@ -138,14 +139,24 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
 shade_hex <- function(base_hex, w, light_to_dark = TRUE) {
   if (!length(base_hex)) return(character(0))
   if (light_to_dark) {
-    colorspace::darken(base_hex, amount = w * 0.7)
+    colorspace::darken(base_hex, amount = w * 0.95)
   } else {
-    colorspace::lighten(base_hex, amount = w * 0.9)
+    colorspace::lighten(base_hex, amount = w * 0.95)
   }
 }
 
+# helper 7 : move track attr to events
+as_event <- function(mv, attr_names) {
+  if (is.null(attr_names) || !length(attr_names)) return(mv)
+  nms <- unique(as.character(attr_names))
+  trkattrb <- names(mt_track_data(mv))
+  out <- mv
+  for (nm in nms) if (!is.null(nm) && nm %in% trkattrb) out <- mt_as_event_attribute(out, nm)
+  out
+}
 
-###############  UI  ################################# 
+
+###############  UI  #################################
 ui <- fluidPage(
   titlePanel("Plot Tracks Colored by Attributes"),
   sidebarLayout(
@@ -220,7 +231,6 @@ ui <- fluidPage(
                  downloadButton("dl_colors_csv", "Download colors CSV (test)"),
                  hr(),
                  uiOutput("dl_colors_msg")
-                 
                  #### csv test-end
     ),
     
@@ -259,26 +269,42 @@ server <- function(input, output, session) {
     updateCheckboxGroupInput(session, "animals", selected = character(0))
   })
   
-  # split attributes into cat and cont
+  # split attributes
   observe({
-    dd <- sf::st_drop_geometry(mv_all()) |> as.data.frame()
+    mv <- mv_all()
+    
+    # event attr
+    dd <- sf::st_drop_geometry(mv) |> as.data.frame()
     keep <- colSums(!is.na(dd)) > 0
     keep <- keep & !sapply(dd, inherits, what = "POSIXt")
     keep <- keep & (sapply(dd, class) != "Date")
-    if (!any(keep)) keep[["track"]] <- TRUE
-    all_choices <- names(dd)[keep]
+    evnt_choices <- names(dd)[keep]
     
-    # Option 1: one attribute
-    updateSelectInput(session, "attr_1", choices = all_choices, selected = all_choices[1])
+    # track attr
+    trk_choices <- setdiff(names(mt_track_data(mv)), names(sf::st_drop_geometry(mv)))
     
-    # Option 2: two attribute
-    is_cont_col <- sapply(all_choices, function(nm) continuous_attr(dd[[nm]], threshold = 12))
-    cat_cols  <- all_choices[!is_cont_col]
-    cont_cols <- all_choices[ is_cont_col]
     
-    updateSelectInput(session, "cat_attr_2",  choices = cat_cols,  selected = if (length(cat_cols))  cat_cols[1]  else NULL)
-    updateSelectInput(session, "cont_attr_2", choices = cont_cols, selected = if (length(cont_cols)) cont_cols[1] else NULL)
+    # Option 1: union (event + track)
+    all_opt1 <- sort(unique(c(evnt_choices, trk_choices)))
+    updateSelectInput(session, "attr_1", choices = all_opt1,
+                      selected = if (length(all_opt1)) all_opt1[1] else NULL)
+    
+    # Option 2
+    all_opt2 <- all_opt1
+    
+    # project all track attrs to events
+    mv_tmp <- as_event(mv, all_opt2)
+    dd2    <- sf::st_drop_geometry(mv_tmp)
+    is_cont_col <- sapply(all_opt2, function(nm) continuous_attr(dd2[[nm]], threshold = 12))
+    cat_cols  <- all_opt2[!is_cont_col]
+    cont_cols <- all_opt2[ is_cont_col]
+    
+    updateSelectInput(session, "cat_attr_2",  choices = cat_cols,
+                      selected = if (length(cat_cols))  cat_cols[1]  else NULL)
+    updateSelectInput(session, "cont_attr_2", choices = cont_cols,
+                      selected = if (length(cont_cols)) cont_cols[1] else NULL)
   })
+  
   
   # Live selection of animals
   mv_sel <- reactive({
@@ -294,7 +320,8 @@ server <- function(input, output, session) {
     req(input$attr_1)
     mv <- mv_sel()
     if (nrow(mv) == 0) return(list(empty = TRUE, is_cont = TRUE))
-    vals <- sf::st_drop_geometry(mv)[[input$attr_1]]
+    mv_use <- as_event(mv, input$attr_1)       
+    vals   <- sf::st_drop_geometry(mv_use)[[input$attr_1]]
     list(empty = FALSE, is_cont = continuous_attr(vals, threshold = 12))
   })
   
@@ -321,7 +348,7 @@ server <- function(input, output, session) {
     }
   })
   
-  ######## first time shows map 
+  ######## first time shows map
   observe({
     mv <- mv_sel()
     if (!is.null(input$attr_1) &&
@@ -331,7 +358,7 @@ server <- function(input, output, session) {
       locked_settings(list(
         animals     = input$animals,
         panel_mode  = input$panel_mode,
-        attr_mode  = input$attr_mode,
+        attr_mode   = input$attr_mode,
         attr_1      = input$attr_1,
         col_low_1   = input$col_low_1,
         col_high_1  = input$col_high_1,
@@ -353,7 +380,7 @@ server <- function(input, output, session) {
     locked_settings(list(
       animals     = input$animals,
       panel_mode  = input$panel_mode,
-      attr_mode  = input$attr_mode,
+      attr_mode   = input$attr_mode,
       attr_1      = input$attr_1,
       col_low_1   = input$col_low_1,
       col_high_1  = input$col_high_1,
@@ -368,31 +395,38 @@ server <- function(input, output, session) {
     locked_attach(isTRUE(input$attach_colors))
   }, ignoreInit = TRUE)
   
-  #  Build segs + palette per mode 
+  # current attribute
+  mv_attr1 <- reactive({
+    s  <- locked_settings()
+    mv <- locked_mv()
+    req(s, mv)
+    as_event(mv, s$attr_1)
+  })
   
+  #  Build segs + palette per mode
   segs_and_pal <- reactive({
     s  <- locked_settings()
     mv <- locked_mv()
     req(s, mv)
     
-    # "Option 1: Color by 1 attribute"
     if (identical(s$attr_mode, "Option 1: Color by 1 attribute")) {
       req(s$attr_1)
-      segs <- make_segments_1attr(mv, s$attr_1, threshold = 12)
+      mv0  <- mv_attr1()
+      segs <- make_segments_1attr(mv0, s$attr_1, threshold = 12)
       validate(need(nrow(segs) > 0, "No segments for selected animals."))
       
       vals <- segs$value
       is_cont <- continuous_attr(vals, threshold = 12)
       
-      if (is_cont) { #continous
+      if (is_cont) { # continuous
         low  <- if (is.null(s$col_low_1))  "yellow" else s$col_low_1
         high <- if (is.null(s$col_high_1)) "blue"   else s$col_high_1
-        all_vals <- as.numeric(sf::st_drop_geometry(locked_mv())[[s$attr_1]])
+        all_vals <- as.numeric(sf::st_drop_geometry(mv0)[[s$attr_1]])
         all_vals <- all_vals[is.finite(all_vals)]
         rng      <- if (length(all_vals)) range(all_vals) else c(0,1)
         pal <- colorNumeric(colorRampPalette(c(low, high))(256), domain = rng, na.color = NA)
         list(mode = 1, segs = segs, is_cont = TRUE, pal = pal, legend_vals = rng, title = s$attr_1)
-      } else {  #categorical
+      } else {  # categorical
         levs  <- sort(unique(stats::na.omit(as.character(vals))))
         n     <- length(levs)
         pname <- if (is.null(s$cat_pal_1)) "Glasbey" else s$cat_pal_1
@@ -403,13 +437,15 @@ server <- function(input, output, session) {
         list(mode = 1, segs = segs, is_cont = FALSE, pal = pal, legend_vals = levs, cols = cols, title = s$attr_1)
       }
       
-    } else {   # "Option 2: Color by 2 attributes"
-      
+    } else {
+      # Option 2: Color by 2 attributes
       req(s$cat_attr_2, s$cont_attr_2)
-      segs <- make_segments_2attr(mv, s$cat_attr_2, s$cont_attr_2)
+      # project attributes to events
+      mv02 <- as_event(mv, c(s$cat_attr_2, s$cont_attr_2))
+      segs <- make_segments_2attr(mv02, s$cat_attr_2, s$cont_attr_2)
       validate(need(nrow(segs) > 0, "No segments for selected animals."))
       
-      #categorical
+      # categorical
       levs  <- sort(unique(stats::na.omit(as.character(segs$cat))))
       n     <- length(levs)
       pname <- if (is.null(s$cat_pal_2)) "Glasbey" else s$cat_pal_2
@@ -422,26 +458,18 @@ server <- function(input, output, session) {
       v_fin <- v_all[is.finite(v_all)]
       rng   <- if (length(v_fin)) range(v_fin) else c(0, 1)
       
-      # shading the categorical color with cont value
+      # shade categorical base by continuous value
       seg_cols <- rep("lightgray", nrow(segs))
       base_vec <- cols_base[as.character(segs$cat)]
       ok <- !is.na(base_vec) & is.finite(v_all)
       if (any(ok)) {
-        # compute weights in [0,1]
-        w_ok <- if (diff(rng) == 0) {
-          rep(0.5, sum(ok))
-        } else {
-          pmin(1, pmax(0, (v_all[ok] - rng[1]) / (rng[2] - rng[1])))
-        }
-        
-        # shade colors
+        w_ok <- if (diff(rng) == 0) rep(0.5, sum(ok)) else pmin(1, pmax(0, (v_all[ok] - rng[1]) / (rng[2] - rng[1])))
         seg_cols[ok] <- shade_hex(
           base_hex      = base_vec[ok],
           w             = w_ok,
           light_to_dark = identical(s$cont_pal_2, "Light to Dark")
         )
       }
-      
       
       list(mode = 2, segs = segs,
            seg_cols = seg_cols,
@@ -460,17 +488,19 @@ server <- function(input, output, session) {
     req(s, mv, sp)
     
     if (sp$mode == 1) {
-      # 1 attribute
-      vals <- sf::st_drop_geometry(mv)[[s$attr_1]]
-      hex  <- if (sp$is_cont) sp$pal(as.numeric(vals)) else sp$pal(as.character(vals))
+    
+      mv_use <- as_event(mv, s$attr_1)
+      vals   <- sf::st_drop_geometry(mv_use)[[s$attr_1]]
+      hex    <- if (sp$is_cont) sp$pal(as.numeric(vals)) else sp$pal(as.character(vals))
       mv$color <- as.character(hex)
       cname <- paste0("color_legend_", s$attr_1)
       mv[[cname]] <- vals
       return(mv)
     } else {
-      # 2 attributes
-      cat_vals  <- sf::st_drop_geometry(mv)[[s$cat_attr_2]]
-      cont_vals <- as.numeric(sf::st_drop_geometry(mv)[[s$cont_attr_2]])
+      
+      mv02 <- as_event(mv, c(s$cat_attr_2, s$cont_attr_2))
+      cat_vals  <- sf::st_drop_geometry(mv02)[[s$cat_attr_2]]
+      cont_vals <- as.numeric(sf::st_drop_geometry(mv02)[[s$cont_attr_2]])
       base_vec  <- sp$cat_legend[as.character(cat_vals)]
       rng       <- sp$cont_range
       
@@ -490,14 +520,11 @@ server <- function(input, output, session) {
       
       mv$color <- as.character(hex)
       
-      # --- NEW: single combined legend column ---
       combo_colname <- paste0(s$cat_attr_2, "-", s$cont_attr_2)
       cat_str  <- ifelse(is.na(cat_vals), "NA", as.character(cat_vals))
       cont_str <- ifelse(is.finite(cont_vals), sprintf('%g', cont_vals), "NA")
       mv[[combo_colname]] <- paste0(cat_str, "-", cont_str)
-      
-      
-      return(mv)                                                             
+      return(mv)
     }
   })
   
@@ -565,39 +592,30 @@ server <- function(input, output, session) {
                    color  = ~.col, smoothFactor = 1)
     
     # Legends
-    
-    # Option 1
     if (sp$mode == 1) {
       if (sp$is_cont) { # continuous
-        
-        vals <- as.numeric(sf::st_drop_geometry(locked_mv())[[sp$title]])
+        mv_legend <- mv_attr1()  # legend source
+        vals <- as.numeric(sf::st_drop_geometry(mv_legend)[[sp$title]])
         vals <- vals[is.finite(vals)]
         if (!length(vals)) vals <- sp$legend_vals
         
-        mn <- min(vals)
-        mx <- max(vals)
+        mn <- min(vals); mx <- max(vals)
         
         # 3 ticks between min and max
         ticks_all <- pretty(c(mn, mx), n = 5)
         inner <- ticks_all[ticks_all > mn & ticks_all < mx]
-        
         if (length(inner) >= 3) {
           idx <- round(seq(1, length(inner), length.out = 3))
           inner3 <- inner[idx]
         } else {
           inner3 <- seq(mn, mx, length.out = 5)[2:4]
         }
-        
         t1 <- inner3[1]; t2 <- inner3[2]; t3 <- inner3[3]
         
-        # add unit to title
-        orig_vals <- sf::st_drop_geometry(locked_mv())[[sp$title]]
+        # unit in title if present
+        orig_vals <- sf::st_drop_geometry(mv_legend)[[sp$title]]
         unit_str  <- if (inherits(orig_vals, "units")) units::deparse_unit(orig_vals) else NULL
-        title_txt <- if (!is.null(unit_str) && nzchar(unit_str)) {
-          paste0(sp$title, " (", unit_str, ")")
-        } else {
-          sp$title
-        }
+        title_txt <- if (!is.null(unit_str) && nzchar(unit_str)) paste0(sp$title, " (", unit_str, ")") else sp$title
         
         grad <- tags$div(
           style = "background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:4px;font-size:11px;",
@@ -607,36 +625,22 @@ server <- function(input, output, session) {
             sp$pal(mn), ",", sp$pal(mx),
             ");border:1px solid rgba(0,0,0,0.25);margin-bottom:6px;"
           )),
-          #  min, 3 ticks, max
           tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.9;",
                    tags$span(sprintf('%g', mn)),
                    tags$span(sprintf('%g', t1)),
                    tags$span(sprintf('%g', t2)),
                    tags$span(sprintf('%g', t3)),
                    tags$span(sprintf('%g', mx))),
-                   
-          
-          # labels
           tags$div(style="display:flex;justify-content:space-between;width:220px;opacity:0.7;",
-                   tags$span("min"),
-                   tags$span(""),
-                   tags$span(""),
-                   tags$span(""),
-                   tags$span("max")),
+                   tags$span("min"), tags$span(""), tags$span(""), tags$span(""), tags$span("max")),
           tags$div(style="margin-top:6px;display:flex;align-items:center;gap:6px;opacity:0.85;",
                    tags$span(style="display:inline-block;width:12px;height:12px;background:#BDBDBD;border:1px solid rgba(0,0,0,0.25);"),
                    tags$span("no data (NA)"))
         )
-        
         m <- leaflet::addControl(m, html = as.character(grad), position = "topright")
-        
       } else {
         m <- add_cat_legend(m, title = sp$title, labels = sp$legend_vals, colors = sp$cols, position = "topright")
       }
-      
-      
-
-    
     } else {
       # Option 2
       m <- add_cat_legend(m, title = sp$title_cat, labels = names(sp$cat_legend),
@@ -735,7 +739,6 @@ server <- function(input, output, session) {
     }
   )
   
-  
   #### PNG Downloads
   output$save_png <- downloadHandler(
     filename = function() {
@@ -800,23 +803,21 @@ server <- function(input, output, session) {
       )
       
       if (identical(s$attr_mode, "Option 1: Color by 1 attribute")) {
-        cname <- paste0("color_legend_", s$attr_1)                   
-        if (!cname %in% names(sf::st_drop_geometry(mv))) {           
-          stop(sprintf("Missing legend column '%s'. Re-apply with 'Add columns...' checked.", cname))  
+        cname <- paste0("color_legend_", s$attr_1)
+        if (!cname %in% names(sf::st_drop_geometry(mv))) {
+          stop(sprintf("Missing legend column '%s'. Re-apply with 'Add columns...' checked.", cname))
         }
-        df[[cname]] <- sf::st_drop_geometry(mv)[[cname]]             
+        df[[cname]] <- sf::st_drop_geometry(mv)[[cname]]
         
       } else {
         combo_col <- paste0(s$cat_attr_2, "-", s$cont_attr_2)
         dd <- sf::st_drop_geometry(mv)
-        
         if (!combo_col %in% names(dd)) {
           stop(sprintf(
             "Missing legend column '%s'. Re-apply with 'Add columns...' checked.",
             combo_col
           ))
         }
-        
         df[[combo_col]] <- dd[[combo_col]]
       }
       
@@ -824,10 +825,7 @@ server <- function(input, output, session) {
       utils::write.csv(df, file, row.names = FALSE)
     }
   )
-  
   #### TEST end #####################
-  
-  
 }
 
 shinyApp(ui, server)
