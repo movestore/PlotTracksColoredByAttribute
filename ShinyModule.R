@@ -16,14 +16,6 @@ library(htmltools)
 library(colorspace)
 
 
-my_data <- readRDS("./data/raw/input4_move2loc_LatLon.rds")
-#my_data <- readRDS("./data/raw/input2_move2loc_LatLon.rds")
-
-# transfer to WGS84 if needed
-if (!sf::st_is_longlat(my_data)) {
-  my_data <- sf::st_transform(my_data, 4326)
-}
-
 ########### helpers ###########
 
 # helper 1: Attribute type
@@ -34,7 +26,7 @@ continuous_attr <- function(vals, threshold = 12) {
   n_unique > threshold
 }
 
-## helper2: making segments with one attributes
+## helper2: making segments with one attribute
 make_segments_1attr <- function(tracks, attr_name, threshold = 12) {
   if (nrow(tracks) < 2) {
     return(sf::st_sf(track = character(0),
@@ -121,7 +113,7 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
                         border:1px solid rgba(0,0,0,0.25);margin-right:6px;'></span>
            <span>%s</span>
          </div>",
-        col, htmltools::htmlEscape(lab)
+        col, as.character(htmltools::htmlEscape(lab))
       )
     }, colors, labels),
     collapse = ""
@@ -130,7 +122,7 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright") {
     "<div style='background:transparent;padding:6px 8px;border-radius:1px;font-size:11px;'>
        <div style='font-weight:600;margin-bottom:4px;'>%s</div>%s
      </div>",
-    htmltools::htmlEscape(title), rows
+    as.character(htmltools::htmlEscape(title)), rows
   )
   leaflet::addControl(map, html = box, position = position)
 }
@@ -155,92 +147,100 @@ as_event <- function(mv, attr_names) {
   out
 }
 
-
 ###############  UI  #################################
-ui <- fluidPage(
-  titlePanel("Plot Tracks Colored by Attributes"),
-  sidebarLayout(
-    sidebarPanel(width = 4,
-                 h4("Tracks"),
-                 checkboxGroupInput("animals", NULL, choices = NULL),
-                 fluidRow(
-                   column(6, actionButton("select_all_animals", "Select All Animals", class = "btn-sm")),
-                   column(6, actionButton("unselect_animals", "Unselect All Animals", class = "btn-sm"))
-                 ),
-                 hr(),
-                 h4("Attribute"),
-                 hr(),
-                 radioButtons("attr_mode", NULL,
-                              choices = c("Option 1: Color by 1 attribute", "Option 2: Color by 2 attributes"),
-                              selected = "Option 1: Color by 1 attribute"),
-                 
-                 # Option 1
-                 conditionalPanel(
-                   condition = "input.attr_mode == 'Option 1: Color by 1 attribute'",
-                   selectInput("attr_1", NULL, choices = NULL),
-                   div(tags$small("Note: Numeric attributes with fewer than 12 unique values are considered as categorical.",
-                                  style = "color: darkblue;")),
-                   uiOutput("ui_color_controls_opt1")
-                 ),
-                 
-                 # Option 2
-                 conditionalPanel(
-                   condition = "input.attr_mode == 'Option 2: Color by 2 attributes'",
+shinyModuleUserInterface <- function(id, label = NULL) {
+  ns <- NS(id)
+  fluidPage(
+    titlePanel("Plot Tracks Colored by Attributes"),
+    sidebarLayout(
+      sidebarPanel(width = 4,
+                   h4("Tracks"),
+                   checkboxGroupInput(ns("animals"), NULL, choices = NULL),
                    fluidRow(
-                     column(6, selectInput("cat_attr_2","Categorical Attribute", choices = NULL)),
-                     column(6, selectInput("cat_pal_2", "Palette",
-                                           choices  = c("Glasbey","Set2","Set3","Dark2","Paired","Accent"),
-                                           selected = "Glasbey"))
+                     column(6, actionButton(ns("select_all_animals"), "Select All Animals", class = "btn-sm")),
+                     column(6, actionButton(ns("unselect_animals"), "Unselect All Animals", class = "btn-sm"))
                    ),
+                   hr(),
+                   h4("Attribute"),
+                   hr(),
+                   radioButtons(ns("attr_mode"), NULL,
+                                choices = c("Option 1: Color by 1 attribute", "Option 2: Color by 2 attributes"),
+                                selected = "Option 1: Color by 1 attribute"),
+                   
+                   # Option 1
+                   conditionalPanel(
+                     condition = sprintf("input['%s'] == 'Option 1: Color by 1 attribute'", ns("attr_mode")),
+                     selectInput(ns("attr_1"), NULL, choices = NULL),
+                     div(tags$small("Note: Numeric attributes with fewer than 12 unique values are considered as categorical.",
+                                    style = "color: darkblue;")),
+                     uiOutput(ns("ui_color_controls_opt1"))
+                   ),
+                   
+                   # Option 2
+                   conditionalPanel(
+                     condition = sprintf("input['%s'] == 'Option 2: Color by 2 attributes'", ns("attr_mode")),
+                     fluidRow(
+                       column(6, selectInput(ns("cat_attr_2"),"Categorical Attribute", choices = NULL)),
+                       column(6, selectInput(ns("cat_pal_2"), "Palette",
+                                             choices  = c("Glasbey","Set2","Set3","Dark2","Paired","Accent"),
+                                             selected = "Glasbey"))
+                     ),
+                     fluidRow(
+                       column(6, selectInput(ns("cont_attr_2"), "Continuous Attribute", choices = NULL)),
+                       column(6, selectInput(ns("cont_pal_2"), "Shade",
+                                             choices = c("Light to Dark","Dark to Light"),
+                                             selected = "Light to Dark"))
+                     ),
+                     div(tags$small("Note: Numeric attributes with fewer than 12 unique values are considered as categorical.",
+                                    style = "color: darkblue;"))
+                   ),
+                   
+                   hr(),
+                   h4("Panel"),
+                   radioButtons(ns("panel_mode"), NULL,
+                                choices = c("Single panel","Multipanel"),
+                                selected = "Single panel", inline = TRUE),
+                   hr(),
+                   h4("Style"),
                    fluidRow(
-                     column(6, selectInput("cont_attr_2", "Continuous Attribute", choices = NULL)),
-                     column(6, selectInput("cont_pal_2", "Shade", choices = c("Light to Dark","Dark to Light"),
-                                           selected = "Light to Dark"))
+                     column(6, numericInput(ns("linesize_att"), "Line width", 3, min = 1, max = 10, step = 1)),
+                     column(6, sliderInput(ns("linealpha_att"), "Transparency", min = 0, max = 1, value = 0.9, step = 0.05))
                    ),
-                   div(tags$small("Note: Numeric attributes with fewer than 12 unique values are considered as categorical.",
-                                  style = "color: darkblue;"))
-                 ),
-                 
-                 hr(),
-                 h4("Panel"),
-                 radioButtons("panel_mode", NULL,
-                              choices = c("Single panel","Multipanel"),
-                              selected = "Single panel", inline = TRUE),
-                 hr(),
-                 h4("Style"),
-                 fluidRow(
-                   column(6, numericInput("linesize_att", "Line width", 3, min = 1, max = 10, step = 1)),
-                   column(6, sliderInput("linealpha_att", "Transparency", min = 0, max = 1, value = 0.9, step = 0.05))
-                 ),
-                 
-                 hr(),
-                 checkboxInput("attach_colors", tags$strong("Add columns color hex and legend in the returned data"), value = FALSE),
-                 
-                 hr(),
-                 actionButton("apply_btn", "Apply Changes", class = "btn-primary btn-block"),
-                 hr(),
-                 
-                 h4("Download"),
-                 fluidRow(
-                   column(6, downloadButton("save_html","Save Map as HTML", class = "btn-sm")),
-                   column(6, downloadButton("save_png", "Save Map as PNG", class = "btn-sm"))
-                 ),
-                 
-                 #### csv test-start
-                 hr(),
-                 downloadButton("dl_colors_csv", "Download colors CSV (test)"),
-                 hr(),
-                 uiOutput("dl_colors_msg")
-                 #### csv test-end
-    ),
-    
-    mainPanel(uiOutput("maps_ui"))
+                   
+                   hr(),
+                   checkboxInput(ns("attach_colors"), tags$strong("Add columns color hex and legend in the returned data"), value = FALSE),
+                   
+                   hr(),
+                   actionButton(ns("apply_btn"), "Apply Changes", class = "btn-primary btn-block"),
+                   hr(),
+                   
+                   h4("Download"),
+                   fluidRow(
+                     column(6, downloadButton(ns("save_html"),"Save Map as HTML", class = "btn-sm")),
+                     column(6, downloadButton(ns("save_png"), "Save Map as PNG", class = "btn-sm"))
+                   ),
+                   
+                   hr(),
+                   downloadButton(ns("dl_colors_csv"), "Download colors CSV (test)"),
+                   hr(),
+                   uiOutput(ns("dl_colors_msg"))
+      ),
+      mainPanel(uiOutput(ns("maps_ui")))
+    )
   )
-)
+}
 
 ############################ server  ###################
 
-server <- function(input, output, session) {
+shinyModule <- function(input, output, session, data) {
+  ns <- session$ns
+  
+  # transfer to WGS84 if needed
+  current <- reactiveVal({
+    mv <- data
+    if (!sf::st_is_longlat(mv)) mv <- sf::st_transform(mv, 4326)
+    mv
+  })
   
   locked_settings <- reactiveVal(NULL)
   locked_mv       <- reactiveVal(NULL)
@@ -248,7 +248,7 @@ server <- function(input, output, session) {
   
   # keep tracks with at least 2 points
   mv_all <- reactive({
-    my_data %>%
+    current() %>%
       arrange(mt_track_id(), mt_time()) %>%
       { .[!duplicated(data.frame(id = mt_track_id(.), t = mt_time(.))), ] } %>%
       group_by(track = mt_track_id()) %>%
@@ -273,36 +273,44 @@ server <- function(input, output, session) {
   observe({
     mv <- mv_all()
     
-    # event attr
+    # event attrs
     dd <- sf::st_drop_geometry(mv) |> as.data.frame()
     keep <- colSums(!is.na(dd)) > 0
     keep <- keep & !sapply(dd, inherits, what = "POSIXt")
     keep <- keep & (sapply(dd, class) != "Date")
     evnt_choices <- names(dd)[keep]
     
-    # track attr
+    # track attrs
     trk_choices <- setdiff(names(mt_track_data(mv)), names(sf::st_drop_geometry(mv)))
     
-    
-    # Option 1: union (event + track)
+    # Option 1
     all_opt1 <- sort(unique(c(evnt_choices, trk_choices)))
-    updateSelectInput(session, "attr_1", choices = all_opt1,
-                      selected = if (length(all_opt1)) all_opt1[1] else NULL)
+    
+    #preserve selection
+    prev_attr1 <- isolate(input$attr_1)
+    sel_attr1 <- if (!is.null(prev_attr1) && prev_attr1 %in% all_opt1) prev_attr1
+    else if (length(all_opt1)) all_opt1[1] else NULL
+    updateSelectInput(session, "attr_1", choices = all_opt1, selected = sel_attr1)
     
     # Option 2
     all_opt2 <- all_opt1
-    
-    # project all track attrs to events
     mv_tmp <- as_event(mv, all_opt2)
     dd2    <- sf::st_drop_geometry(mv_tmp)
     is_cont_col <- sapply(all_opt2, function(nm) continuous_attr(dd2[[nm]], threshold = 12))
     cat_cols  <- all_opt2[!is_cont_col]
     cont_cols <- all_opt2[ is_cont_col]
     
-    updateSelectInput(session, "cat_attr_2",  choices = cat_cols,
-                      selected = if (length(cat_cols))  cat_cols[1]  else NULL)
-    updateSelectInput(session, "cont_attr_2", choices = cont_cols,
-                      selected = if (length(cont_cols)) cont_cols[1] else NULL)
+    # preserve selections for attr_2
+    prev_cat2  <- isolate(input$cat_attr_2)
+    prev_cont2 <- isolate(input$cont_attr_2)
+    
+    sel_cat2  <- if (!is.null(prev_cat2)  && prev_cat2  %in% cat_cols)  prev_cat2
+    else if (length(cat_cols))  cat_cols[1]  else NULL
+    sel_cont2 <- if (!is.null(prev_cont2) && prev_cont2 %in% cont_cols) prev_cont2
+    else if (length(cont_cols)) cont_cols[1] else NULL
+    
+    updateSelectInput(session, "cat_attr_2",  choices = cat_cols,  selected = sel_cat2)
+    updateSelectInput(session, "cont_attr_2", choices = cont_cols, selected = sel_cont2)
   })
   
   
@@ -332,16 +340,16 @@ server <- function(input, output, session) {
       tagList(
         h4("Colors"),
         fluidRow(
-          column(6, colourpicker::colourInput("col_low_1",  "Low",
+          column(6, colourpicker::colourInput(ns("col_low_1"),  "Low",
                                               if (is.null(isolate(input$col_low_1)))  "yellow" else isolate(input$col_low_1))),
-          column(6, colourpicker::colourInput("col_high_1", "High",
+          column(6, colourpicker::colourInput(ns("col_high_1"), "High",
                                               if (is.null(isolate(input$col_high_1))) "blue"   else isolate(input$col_high_1)))
         )
       )
     } else {
       tagList(
         h4("Colors"),
-        selectInput("cat_pal_1", "Palette",
+        selectInput(ns("cat_pal_1"), "Palette",
                     choices  = c("Glasbey","Set2","Set3","Dark2","Paired","Accent"),
                     selected = if (is.null(isolate(input$cat_pal_1))) "Glasbey" else isolate(input$cat_pal_1))
       )
@@ -413,7 +421,7 @@ server <- function(input, output, session) {
       req(s$attr_1)
       mv0  <- mv_attr1()
       segs <- make_segments_1attr(mv0, s$attr_1, threshold = 12)
-      validate(need(nrow(segs) > 0, "No segments for selected animals."))
+      shiny::validate(shiny::need(nrow(segs) > 0, "No segments for selected animals."))
       
       vals <- segs$value
       is_cont <- continuous_attr(vals, threshold = 12)
@@ -421,10 +429,13 @@ server <- function(input, output, session) {
       if (is_cont) { # continuous
         low  <- if (is.null(s$col_low_1))  "yellow" else s$col_low_1
         high <- if (is.null(s$col_high_1)) "blue"   else s$col_high_1
-        all_vals <- as.numeric(sf::st_drop_geometry(mv0)[[s$attr_1]])
-        all_vals <- all_vals[is.finite(all_vals)]
-        rng      <- if (length(all_vals)) range(all_vals) else c(0,1)
+        orig_vals <- sf::st_drop_geometry(mv0)[[s$attr_1]]
+        all_vals  <- if (inherits(orig_vals, "units")) units::drop_units(orig_vals) else orig_vals
+        all_vals  <- as.numeric(all_vals)
+        all_vals  <- all_vals[is.finite(all_vals)]
+        rng       <- if (length(all_vals)) range(all_vals) else c(0, 1)
         pal <- colorNumeric(colorRampPalette(c(low, high))(256), domain = rng, na.color = NA)
+        
         list(mode = 1, segs = segs, is_cont = TRUE, pal = pal, legend_vals = rng, title = s$attr_1)
       } else {  # categorical
         levs  <- sort(unique(stats::na.omit(as.character(vals))))
@@ -440,12 +451,10 @@ server <- function(input, output, session) {
     } else {
       # Option 2: Color by 2 attributes
       req(s$cat_attr_2, s$cont_attr_2)
-      # project attributes to events
       mv02 <- as_event(mv, c(s$cat_attr_2, s$cont_attr_2))
       segs <- make_segments_2attr(mv02, s$cat_attr_2, s$cont_attr_2)
-      validate(need(nrow(segs) > 0, "No segments for selected animals."))
+      shiny::validate(shiny::need(nrow(segs) > 0, "No segments for selected animals."))
       
-      # categorical
       levs  <- sort(unique(stats::na.omit(as.character(segs$cat))))
       n     <- length(levs)
       pname <- if (is.null(s$cat_pal_2)) "Glasbey" else s$cat_pal_2
@@ -458,7 +467,6 @@ server <- function(input, output, session) {
       v_fin <- v_all[is.finite(v_all)]
       rng   <- if (length(v_fin)) range(v_fin) else c(0, 1)
       
-      # shade categorical base by continuous value
       seg_cols <- rep("lightgray", nrow(segs))
       base_vec <- cols_base[as.character(segs$cat)]
       ok <- !is.na(base_vec) & is.finite(v_all)
@@ -488,16 +496,15 @@ server <- function(input, output, session) {
     req(s, mv, sp)
     
     if (sp$mode == 1) {
-    
       mv_use <- as_event(mv, s$attr_1)
-      vals   <- sf::st_drop_geometry(mv_use)[[s$attr_1]]
-      hex    <- if (sp$is_cont) sp$pal(as.numeric(vals)) else sp$pal(as.character(vals))
+      vals0  <- sf::st_drop_geometry(mv_use)[[s$attr_1]]
+      numv   <- if (inherits(vals0, "units")) units::drop_units(vals0) else vals0
+      hex    <- if (sp$is_cont) sp$pal(as.numeric(numv)) else sp$pal(as.character(vals0))
       mv$color <- as.character(hex)
       cname <- paste0("color_legend_", s$attr_1)
-      mv[[cname]] <- vals
+      mv[[cname]] <- vals0
       return(mv)
     } else {
-      
       mv02 <- as_event(mv, c(s$cat_attr_2, s$cont_attr_2))
       cat_vals  <- sf::st_drop_geometry(mv02)[[s$cat_attr_2]]
       cont_vals <- as.numeric(sf::st_drop_geometry(mv02)[[s$cont_attr_2]])
@@ -532,10 +539,6 @@ server <- function(input, output, session) {
     if (isTRUE(locked_attach())) mv_with_colors() else NULL
   }, ignoreInit = TRUE)
   
-  observeEvent(return_mv_with_colors(), {
-    session$userData$mv_next <- return_mv_with_colors
-  })
-  
   #### Leaflet map   ##########
   leaflet_map <- function(track_id = NULL) {
     s  <- locked_settings()
@@ -549,7 +552,7 @@ server <- function(input, output, session) {
       } else {
         segs <- sp$segs[sp$segs$track == track_id, , drop = FALSE]
       }
-      validate(need(nrow(segs) > 0, "No data for this animal."))
+      shiny::validate(shiny::need(nrow(segs) > 0, "No data for this animal."))
     } else {
       segs <- sp$segs
     }
@@ -600,8 +603,6 @@ server <- function(input, output, session) {
         if (!length(vals)) vals <- sp$legend_vals
         
         mn <- min(vals); mx <- max(vals)
-        
-        # 3 ticks between min and max
         ticks_all <- pretty(c(mn, mx), n = 5)
         inner <- ticks_all[ticks_all > mn & ticks_all < mx]
         if (length(inner) >= 3) {
@@ -612,7 +613,6 @@ server <- function(input, output, session) {
         }
         t1 <- inner3[1]; t2 <- inner3[2]; t3 <- inner3[3]
         
-        # unit in title if present
         orig_vals <- sf::st_drop_geometry(mv_legend)[[sp$title]]
         unit_str  <- if (inherits(orig_vals, "units")) units::deparse_unit(orig_vals) else NULL
         title_txt <- if (!is.null(unit_str) && nzchar(unit_str)) paste0(sp$title, " (", unit_str, ")") else sp$title
@@ -642,7 +642,6 @@ server <- function(input, output, session) {
         m <- add_cat_legend(m, title = sp$title, labels = sp$legend_vals, colors = sp$cols, position = "topright")
       }
     } else {
-      # Option 2
       m <- add_cat_legend(m, title = sp$title_cat, labels = names(sp$cat_legend),
                           colors = unname(sp$cat_legend), position = "topright")
       
@@ -654,7 +653,7 @@ server <- function(input, output, session) {
                           border:1px solid rgba(0,0,0,0.25);'></span>
              <span>no data (NA)</span>
            </div>
-         </div>", htmlEscape(sp$title_cont)
+         </div>", as.character(htmltools::htmlEscape(sp$title_cont))
       )
       m <- leaflet::addControl(m, html = cont_legend, position = "topright")
     }
@@ -672,7 +671,7 @@ server <- function(input, output, session) {
                  "Please select one or more animals."))
     
     if (identical(s$panel_mode, "Single panel")) {
-      return(withSpinner(leafletOutput("map_single", height = "85vh"), type = 4, color = "blue", size = 0.9))
+      return(withSpinner(leafletOutput(ns("map_single"), height = "85vh"), type = 4, color = "blue", size = 0.9))
     }
     
     width <- 6
@@ -680,7 +679,7 @@ server <- function(input, output, session) {
       content <- tagList(
         tags$h5(paste("Animal:", ids[i]),
                 style = "text-align: center; margin-top: 5px; margin-bottom: 5px;"),
-        withSpinner(leafletOutput(paste0("map_", ids[i]), height = "45vh"), type = 4, color = "blue", size = 0.9)
+        withSpinner(leafletOutput(ns(paste0("map_", ids[i])), height = "45vh"), type = 4, color = "blue", size = 0.9)
       )
       column(width, content)
     })
@@ -689,7 +688,7 @@ server <- function(input, output, session) {
   })
   
   output$map_single <- renderLeaflet({
-    validate(need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
+    shiny::validate(shiny::need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
     leaflet_map()
   })
   
@@ -701,7 +700,7 @@ server <- function(input, output, session) {
       local({
         id_loc <- id_i
         output[[paste0("map_", id_loc)]] <- renderLeaflet({
-          validate(need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
+          shiny::validate(shiny::need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
           leaflet_map(track_id = id_loc)
         })
       })
@@ -780,7 +779,6 @@ server <- function(input, output, session) {
   output$dl_colors_csv <- downloadHandler(
     filename = function() paste0("colors_", Sys.Date(), ".csv"),
     content  = function(file) {
-      
       if (is.null(return_mv_with_colors())) {
         output$dl_colors_msg <- renderUI(
           div(
@@ -808,15 +806,11 @@ server <- function(input, output, session) {
           stop(sprintf("Missing legend column '%s'. Re-apply with 'Add columns...' checked.", cname))
         }
         df[[cname]] <- sf::st_drop_geometry(mv)[[cname]]
-        
       } else {
         combo_col <- paste0(s$cat_attr_2, "-", s$cont_attr_2)
         dd <- sf::st_drop_geometry(mv)
         if (!combo_col %in% names(dd)) {
-          stop(sprintf(
-            "Missing legend column '%s'. Re-apply with 'Add columns...' checked.",
-            combo_col
-          ))
+          stop(sprintf("Missing legend column '%s'. Re-apply with 'Add columns...' checked.", combo_col))
         }
         df[[combo_col]] <- dd[[combo_col]]
       }
@@ -825,7 +819,12 @@ server <- function(input, output, session) {
       utils::write.csv(df, file, row.names = FALSE)
     }
   )
+  
   #### TEST end #####################
+  
+  observeEvent(return_mv_with_colors(), {
+    if (!is.null(return_mv_with_colors())) current(return_mv_with_colors())
+  })
+  
+  return(reactive({ current() }))
 }
-
-shinyApp(ui, server)
