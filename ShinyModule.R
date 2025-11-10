@@ -235,12 +235,26 @@ shinyModuleUserInterface <- function(id, label = NULL) {
 shinyModule <- function(input, output, session, data) {
   ns <- session$ns
   
-  # transfer to WGS84 if needed
+  # transfer to WGS84 if needed and drop NA columns
   current <- reactiveVal({
     mv <- data
     if (!sf::st_is_longlat(mv)) mv <- sf::st_transform(mv, 4326)
+    
+    # drop NA event columns
+    ev <- sf::st_drop_geometry(mv)
+    keep_ev <- names(ev)[colSums(!is.na(ev)) > 0]
+    mv <- mv[, keep_ev, drop = FALSE]
+    
+    # drop NA track columns
+    td <- mt_track_data(mv)
+    if (!is.null(td) && ncol(td) > 0) {
+      keep_td <- names(td)[colSums(!is.na(td)) > 0]
+      mv <- do.call(select_track_data, c(list(mv), as.list(keep_td)))
+    }
+    
     mv
   })
+  
   
   locked_settings <- reactiveVal(NULL)
   locked_mv       <- reactiveVal(NULL)
