@@ -29,7 +29,7 @@ continuous_attr <- function(vals, threshold = 12) {
 ## helper2: making segments with one attribute
 make_segments_1attr <- function(tracks, attr_name, threshold = 12) {
   if (nrow(tracks) < 2) {
-    return(sf::st_sf(track = character(0),
+    return(sf::st_sf(track_id = character(0),
                      value = character(0),
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
   }
@@ -39,7 +39,7 @@ make_segments_1attr <- function(tracks, attr_name, threshold = 12) {
   
   same_track_next <- c(id[-length(id)] == id[-1], FALSE)
   if (!any(same_track_next)) {
-    return(sf::st_sf(track = character(0),
+    return(sf::st_sf(track_id = character(0),
                      value = character(0),
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
   }
@@ -53,13 +53,13 @@ make_segments_1attr <- function(tracks, attr_name, threshold = 12) {
   }
   
   seg_track <- id[which(same_track_next)]
-  sf::st_sf(track = seg_track, value = seg_val, geometry = segs[same_track_next])
+  sf::st_sf(track_id = seg_track, value = seg_val, geometry = segs[same_track_next])
 }
 
 ## helper3: making segments with two attributes
 make_segments_2attr <- function(tracks, cat_name, cont_name) {
   if (nrow(tracks) < 2) {
-    return(sf::st_sf(track = character(0),
+    return(sf::st_sf(track_id = character(0),
                      cat   = character(0),
                      cont  = numeric(0),
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
@@ -73,7 +73,7 @@ make_segments_2attr <- function(tracks, cat_name, cont_name) {
   
   same_track_next <- c(id[-length(id)] == id[-1], FALSE)
   if (!any(same_track_next)) {
-    return(sf::st_sf(track = character(0),
+    return(sf::st_sf(track_id = character(0),
                      cat   = character(0),
                      cont  = numeric(0),
                      geometry = sf::st_sfc(crs = sf::st_crs(tracks))))
@@ -84,7 +84,7 @@ make_segments_2attr <- function(tracks, cat_name, cont_name) {
   seg_cont[is.nan(seg_cont)] <- NA_real_
   
   seg_track <- id[which(same_track_next)]
-  sf::st_sf(track = seg_track, cat = seg_cat, cont = seg_cont, geometry = segs[same_track_next])
+  sf::st_sf(track_id = seg_track, cat = seg_cat, cont = seg_cont, geometry = segs[same_track_next])
 }
 
 ## helper 4:  generate HCL colors
@@ -220,10 +220,7 @@ shinyModuleUserInterface <- function(id, label = NULL) {
                      column(6, downloadButton(ns("save_png"), "Save Map as PNG", class = "btn-sm"))
                    ),
                    
-                   hr(),
-                   downloadButton(ns("dl_colors_csv"), "Download colors CSV (test)"),
-                   hr(),
-                   uiOutput(ns("dl_colors_msg"))
+                   
       ),
       mainPanel(uiOutput(ns("maps_ui")))
     )
@@ -265,7 +262,7 @@ shinyModule <- function(input, output, session, data) {
     current() %>%
       arrange(mt_track_id(), mt_time()) %>%
       { .[!duplicated(data.frame(id = mt_track_id(.), t = mt_time(.))), ] } %>%
-      group_by(track = mt_track_id()) %>%
+      group_by(track_id = mt_track_id()) %>%
       filter(n() >= 2) %>%
       ungroup()
   })
@@ -514,7 +511,7 @@ shinyModule <- function(input, output, session, data) {
       vals0  <- sf::st_drop_geometry(mv_use)[[s$attr_1]]
       numv   <- if (inherits(vals0, "units")) units::drop_units(vals0) else vals0
       hex    <- if (sp$is_cont) sp$pal(as.numeric(numv)) else sp$pal(as.character(vals0))
-      mv$color <- as.character(hex)
+      mv$color_hex <- as.character(hex)
       cname <- paste0("color_legend_", s$attr_1)
       mv[[cname]] <- vals0
       return(mv)
@@ -539,9 +536,9 @@ shinyModule <- function(input, output, session, data) {
         )
       }
       
-      mv$color <- as.character(hex)
+      mv$color_hex <- as.character(hex)
       
-      combo_colname <- paste0(s$cat_attr_2, "-", s$cont_attr_2)
+      combo_colname <- paste0("color_legend_", s$cat_attr_2, "-", s$cont_attr_2)
       cat_str  <- ifelse(is.na(cat_vals), "NA", as.character(cat_vals))
       cont_str <- ifelse(is.finite(cont_vals), sprintf('%g', cont_vals), "NA")
       mv[[combo_colname]] <- paste0(cat_str, "-", cont_str)
@@ -562,9 +559,9 @@ shinyModule <- function(input, output, session, data) {
     # subset for multipanel
     if (!is.null(track_id)) {
       if (sp$mode == 1) {
-        segs <- sp$segs[sp$segs$track == track_id, , drop = FALSE]
+        segs <- sp$segs[sp$segs$track_id == track_id, , drop = FALSE]
       } else {
-        segs <- sp$segs[sp$segs$track == track_id, , drop = FALSE]
+        segs <- sp$segs[sp$segs$track_id == track_id, , drop = FALSE]
       }
       shiny::validate(shiny::need(nrow(segs) > 0, "No data for this animal."))
     } else {
@@ -584,7 +581,7 @@ shinyModule <- function(input, output, session, data) {
       dseg <- segs
       pcols <- sp$seg_cols
       if (!is.null(track_id)) {
-        idx <- sp$segs$track == track_id
+        idx <- sp$segs$track_id == track_id
         pcols <- pcols[idx]
       }
       dseg$.col <- pcols
@@ -789,52 +786,6 @@ shinyModule <- function(input, output, session, data) {
     }
   )
   
-  #### TEST  — CSV of color columns ##############
-  output$dl_colors_csv <- downloadHandler(
-    filename = function() paste0("colors_", Sys.Date(), ".csv"),
-    content  = function(file) {
-      if (is.null(return_mv_with_colors())) {
-        output$dl_colors_msg <- renderUI(
-          div(
-            style = "color:red; font-weight:600; margin-top:6px;",
-            HTML('Please check <em>“Add columns color hex and legend in the returned data”</em> and click <u>Apply Changes</u> before downloading.')
-          )
-        )
-        stop("Download blocked: colors not attached (checkbox not applied).")
-      }
-      
-      output$dl_colors_msg <- renderUI(NULL)
-      
-      s  <- locked_settings(); req(s)
-      mv <- return_mv_with_colors(); req(!is.null(mv))
-      
-      df <- data.frame(
-        track_id  = as.character(mt_track_id(mv)),
-        color_hex = as.character(mv$color),
-        stringsAsFactors = FALSE
-      )
-      
-      if (identical(s$attr_mode, "Option 1: Color by 1 attribute")) {
-        cname <- paste0("color_legend_", s$attr_1)
-        if (!cname %in% names(sf::st_drop_geometry(mv))) {
-          stop(sprintf("Missing legend column '%s'. Re-apply with 'Add columns...' checked.", cname))
-        }
-        df[[cname]] <- sf::st_drop_geometry(mv)[[cname]]
-      } else {
-        combo_col <- paste0(s$cat_attr_2, "-", s$cont_attr_2)
-        dd <- sf::st_drop_geometry(mv)
-        if (!combo_col %in% names(dd)) {
-          stop(sprintf("Missing legend column '%s'. Re-apply with 'Add columns...' checked.", combo_col))
-        }
-        df[[combo_col]] <- dd[[combo_col]]
-      }
-      
-      df <- unique(df)
-      utils::write.csv(df, file, row.names = FALSE)
-    }
-  )
-  
-  #### TEST end #####################
   
   observeEvent(return_mv_with_colors(), {
     if (!is.null(return_mv_with_colors())) current(return_mv_with_colors())
