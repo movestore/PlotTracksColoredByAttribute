@@ -45,9 +45,6 @@
         "name": "shinybusy"
       },
       {
-        "name": "grDevices"
-      },
-      {
         "name": "colorspace"
       }
       
