@@ -1,26 +1,30 @@
 # tie everything together
 # the following files will NOT bundled into the final app - they are just helpers in the SDK
 source("src/common/logger.R")
-source("src/common/runtime_configuration.R")
 source("src/io/app_files.R")
 source("src/io/io_handler.R")
 source("src/io/shiny_bookmark_handler.R")
 source("src/io/rds.R")
+source("src/io/pilot_client.R")
+
+# `./ShinyModule.R` is the home of your app code
+# It is the only file which will be bundled into the final app on MoveApps
+source("ShinyModule.R")
 
 Sys.setenv(tz="UTC")
 
-ui <- function(request) { 
+ui <- function(request) {
   fluidPage(
     tags$head(singleton(tags$script(src = 'ws-keep-alive-fix.js'))),
+    tags$head(singleton(tags$script(src = 'extract-inputs.js'))),
     tags$link(rel = "stylesheet", type = "text/css", href = "ws-keep-alive-fix.css"),
     shinyModuleUserInterface("shinyModule"),
-    dataTableOutput("table"), #Is necessary for storing result
 
     # ws-heartbeat fix
     # kudos: https://github.com/rstudio/shiny/issues/2110#issuecomment-419971302
     textOutput("ws_heartbeat"),
     # store the current state (as a shiny bookmark)
-    bookmarkButton(title="Save state",class="btn btn-outline-success")
+    bookmarkButton(id = 'ma_bookmark', label="Store settings", title="Click here to store the current chosen settings for future runs of the workflow",class="btn btn-outline-success"),
   )
 }
 
@@ -30,7 +34,7 @@ server <- function(input, output, session) {
     data <- readInput(sourceFile())
     shinyModuleArgs <- c(shinyModule, "shinyModule")
     if (!is.null(data)) {
-        shinyModuleArgs[["data"]] <- data
+      shinyModuleArgs[["data"]] <- data
     }
 
     result <- do.call(callModule, shinyModuleArgs)
@@ -39,11 +43,28 @@ server <- function(input, output, session) {
       session,
       {
         restoreShinyBookmark(session)
+        # Trigger extractShinyInput after restoring the bookmark
+        session$sendCustomMessage("extract-shiny-input", list())
       },
       once = TRUE
     )
 
-    output$table <- renderDataTable({
+    # Need to exclude the button itself from being bookmarked
+    setBookmarkExclude(c("ma_bookmark"))
+    # Trigger bookmarking with button (needed b/c of custom bookmark button ID)
+    observeEvent(input$ma_bookmark, {
+      # call the (native shiny) RDS bookmarking
+      session$doBookmark()
+      # call the (custom MoveApps) JSON bookmarking
+      session$sendCustomMessage("extract-shiny-input", list())
+    })
+    # listen to the custom shiny input extraction and store it as JSON
+    observeEvent(input$shiny_input_json, {
+      req(input$shiny_input_json)
+      saveInputAsJson(input$shiny_input_json)
+      notifyPushBookmark("input.json")
+    })
+    observe({
       storeResult(result(), outputFile())
       notifyDone("SHINY")
     })
@@ -65,10 +86,11 @@ server <- function(input, output, session) {
     req(input$heartbeat)
     input$heartbeat
   })
-  
+
   # hook after persisting the bookmark
   # see https://shiny.rstudio.com/articles/advanced-bookmarking.html
   onBookmarked(function(url) {
     saveBookmarkAsLatest(url)
+    notifyPushBookmark("input.rds")
   })
 }
