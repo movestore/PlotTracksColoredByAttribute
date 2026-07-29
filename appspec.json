@@ -1,4 +1,5 @@
 {
+  "version": "1.2",
   "settings":[],
   "dependencies": {
     "R": [
@@ -46,7 +47,11 @@
       },
       {
         "name": "colorspace"
+      },
+      {
+        "name": "units"
       }
+      
       
     ]
   },
@@ -85,8 +90,5 @@
       "affiliation": "Max-Planck-Institute of Animal Behavior",
       "affiliationRor": "https://ror.org/026stee22"
     }
-  ],
-  "documentation" : {
-    "url": "https://github.com/movestore/PlotTracksColoredByAttribute/blob/master/README.md"
-  }
+  ]
 }

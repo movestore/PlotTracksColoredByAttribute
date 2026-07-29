@@ -68,7 +68,8 @@ Plots_PNG_xx.zip : representing map and plot as zip folder containing different 
   `Multipanel` : shows each track on separate panels.
     
     
-**"Style"** : user can customize the style of plot lines: `Line width`  & `Transparency`
+**"Style"** :  
+user can customize the style of plot lines: `Line width`  & `Transparency`
 
 Check box `Add columns color hex and attribute name(s) in the returned data`:  
 The App adds three columns to the returned move2 object:      
@@ -81,9 +82,11 @@ color_hex : the hex code used to draw each point/segment;
 `Save Map as PNG`:  locally downloads the current plot in PNG format.
 *Note: In Multipanel mode, a ZIP archive is created with one HTML/PNG per track.
 
-**"Map Selection"**: User can select three types op maps:  `OpenStreetMap` or `TopoMap` or `Aerial`  
+**“Zoom in–Zoom out”**: use the mouse wheel and the +/- controls; double-click to zoom in, and double-click the map background again to reset the view.  
+**"Map Selection"**: User can select three types op maps:  `OpenStreetMap` or `TopoMap` or `Aerial`   
+**"Show Legend"**: User can show or hide the legend layers depending on the selected attribute mode, including `Categorical_Legend` and `Continious_Legend`
 
-**“Zoom in–Zoom out”**: use the mouse wheel and the +/- controls; double-click to zoom in, and double-click the map background again to reset the view.
+
 
 **"Apply changes"**: button to apply any selection
 
