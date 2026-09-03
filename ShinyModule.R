@@ -144,7 +144,7 @@ as_event <- function(mv, attr_names) {
   trkattrb <- names(mt_track_data(mv))
   out <- mv
   for (nm in nms) {
-    if (!is.null(nm) && nm %in% trkattrb) out <- mt_as_event_attribute(out, nm)
+    if (!is.null(nm) && nm %in% trkattrb) out <- mt_as_event_attribute(out, dplyr::all_of(nm))
   }
   out
 }
@@ -158,6 +158,9 @@ get_attr_choices <- function(mv) {
     keep_ev <- colSums(!is.na(event_df)) > 0
     keep_ev <- keep_ev & !vapply(event_df, inherits, logical(1), what = "POSIXt")
     keep_ev <- keep_ev & !vapply(event_df, inherits, logical(1), what = "Date")
+    # st_drop_geometry() only drops the *active* geometry column, so any further
+    # sfc column would otherwise be offered and coloured by its WKT string.
+    keep_ev <- keep_ev & !vapply(event_df, inherits, logical(1), what = "sfc")
     event_choices <- names(event_df)[keep_ev]
   }
   
@@ -168,6 +171,7 @@ get_attr_choices <- function(mv) {
     keep_td <- colSums(!is.na(td)) > 0
     keep_td <- keep_td & !vapply(td, inherits, logical(1), what = "POSIXt")
     keep_td <- keep_td & !vapply(td, inherits, logical(1), what = "Date")
+    keep_td <- keep_td & !vapply(td, inherits, logical(1), what = "sfc")
     track_choices <- setdiff(names(td)[keep_td], event_choices)
   }
   
@@ -347,9 +351,8 @@ shinyModule <- function(input, output, session, data) {
     base_data() %>%
       arrange(mt_track_id(), mt_time()) %>%
       { .[!duplicated(data.frame(id = mt_track_id(.), t = mt_time(.))), ] } %>%
-      group_by(track_id = mt_track_id()) %>%
-      filter(n() >= 2) %>%
-      ungroup()
+      { .[as.character(mt_track_id(.)) %in%
+            names(which(table(as.character(mt_track_id(.))) >= 2)), ] }
   })
   ########
   applied_animals <- reactiveVal(NULL)
@@ -564,14 +567,22 @@ shinyModule <- function(input, output, session, data) {
         
         list(mode = 1, segs = segs, is_cont = TRUE, pal = pal, legend_vals = rng, title = s$attr_1)
       } else {
-        levs  <- sort(unique(stats::na.omit(as.character(vals))))
-        n     <- length(levs)
+        mv_full   <- as_event(data, s$attr_1)
+        vals_full <- sf::st_drop_geometry(mv_full)[[s$attr_1]]
+        levs_all  <- sort(unique(stats::na.omit(as.character(vals_full))))
+        levs      <- sort(unique(stats::na.omit(as.character(vals))))
+        levs_all  <- sort(unique(c(levs_all, levs)))
+        if (!length(levs_all)) levs_all <- levs
+        
+        n     <- length(levs_all)
         pname <- if (is.null(s$cat_pal_1)) "Glasbey" else s$cat_pal_1
         base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
         else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
-        cols  <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
-        pal   <- colorFactor(cols, domain = levs, na.color = NA)
-        list(mode = 1, segs = segs, is_cont = FALSE, pal = pal, legend_vals = levs, cols = cols, title = s$attr_1)
+        cols_all <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
+        names(cols_all) <- levs_all
+        pal   <- colorFactor(unname(cols_all), domain = levs_all, na.color = NA)
+        list(mode = 1, segs = segs, is_cont = FALSE, pal = pal,
+             legend_vals = levs, cols = unname(cols_all[levs]), title = s$attr_1)
       }
       
     } else { #option2
@@ -580,13 +591,17 @@ shinyModule <- function(input, output, session, data) {
       segs <- make_segments_2attr(mv02, s$cat_attr_2, s$cont_attr_2)
       shiny::validate(shiny::need(nrow(segs) > 0, "No segments for selected animals."))
       
-      levs  <- sort(unique(stats::na.omit(as.character(segs$cat))))
-      n     <- length(levs)
+      cat_full  <- sf::st_drop_geometry(as_event(data, s$cat_attr_2))[[s$cat_attr_2]]
+      levs      <- sort(unique(stats::na.omit(as.character(segs$cat))))
+      levs_all  <- sort(unique(c(sort(unique(stats::na.omit(as.character(cat_full)))), levs)))
+      if (!length(levs_all)) levs_all <- levs
+      
+      n     <- length(levs_all)
       pname <- if (is.null(s$cat_pal_2)) "Glasbey" else s$cat_pal_2
       base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
       else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
       cols_base <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
-      names(cols_base) <- levs
+      names(cols_base) <- levs_all
       
       v_all <- segs$cont
       v_fin <- v_all[is.finite(v_all)]
@@ -604,6 +619,7 @@ shinyModule <- function(input, output, session, data) {
         mode = 2, segs = segs,
         seg_cols = seg_cols,
         cat_legend = cols_base,
+        legend_levs = levs,
         cont_range = rng,
         title_cat = s$cat_attr_2,
         title_cont = paste0(s$cont_attr_2, " (", s$cont_pal_2, ")")
@@ -653,7 +669,7 @@ shinyModule <- function(input, output, session, data) {
         rep(0.5, length(cont_vals))
       }
       
-      hex <- rep("lightgray", length(base_vec))
+      hex <- rep(NA_character_, length(base_vec))
       ok  <- !is.na(base_vec) & is.finite(cont_vals)
       
       if (any(ok)) {
@@ -794,9 +810,10 @@ shinyModule <- function(input, output, session, data) {
         m <- add_cat_legend(m, title = sp$title, labels = sp$legend_vals, colors = sp$cols, position = "topright", group = "Categorical_Legend")
       }
     } else {
+      leg_levs <- sp$legend_levs %||% names(sp$cat_legend)
       m <- add_cat_legend(m, title = sp$title_cat,
-                          labels = names(sp$cat_legend),
-                          colors = unname(sp$cat_legend),
+                          labels = leg_levs,
+                          colors = unname(sp$cat_legend[leg_levs]),
                           position = "topright", group = "Categorical_Legend")
       
       rng <- sp$cont_range
@@ -872,7 +889,7 @@ shinyModule <- function(input, output, session, data) {
       content <- tagList(
         tags$h5(paste("Track:", ids[i]),
                 style = "text-align: center; margin-top: 5px; margin-bottom: 5px;"),
-        withSpinner(leafletOutput(ns(paste0("map_", ids[i])), height = "45vh"), type = 4, color = "blue", size = 0.9)
+        withSpinner(leafletOutput(ns(paste0("map_", i)), height = "45vh"), type = 4, color = "blue", size = 0.9)
       )
       column(width, content)
     })
@@ -891,10 +908,10 @@ shinyModule <- function(input, output, session, data) {
     req(s, identical(s$panel_mode, "Multipanel"))
     ids <- s$animals
     if (is.null(ids) || length(ids) == 0) return()
-    lapply(ids, function(id_i) {
+    lapply(seq_along(ids), function(i) {
       local({
-        id_loc <- id_i
-        output[[paste0("map_", id_loc)]] <- renderLeaflet({
+        id_loc <- ids[i]
+        output[[paste0("map_", i)]] <- renderLeaflet({
           shiny::validate(shiny::need(!is.null(locked_settings()) && !is.null(locked_mv()), "Loading…"))
           leaflet_map(track_id = id_loc)
         })
