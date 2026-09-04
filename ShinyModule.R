@@ -149,6 +149,12 @@ as_event <- function(mv, attr_names) {
   out
 }
 
+# helper 7b: track ids can contain "/" (and on Windows "\\"), which breaks the
+# per-track download paths: the file silently lands nowhere and the zip comes up
+# short one track. Replace only the path separators, so every id that already
+# works - including ids with spaces - keeps exactly the file name it has today.
+safe_file_id <- function(x) gsub("[/\\\\]", "_", as.character(x))
+
 # helper 8: get available attribute names directly from event + track data
 get_attr_choices <- function(mv) {
   event_df <- sf::st_drop_geometry(mv) |> as.data.frame()
@@ -558,7 +564,7 @@ shinyModule <- function(input, output, session, data) {
       shiny::validate(shiny::need(nrow(segs) > 0, "No segments for selected animals."))
       
       vals <- segs$value
-      is_cont <- continuous_attr(vals, threshold = 12)
+      is_cont <- continuous_attr(get_attr_values(mv0, s$attr_1), threshold = 12)
       
       if (is_cont) {
         low  <- if (is.null(s$col_low_1))  "yellow" else s$col_low_1
@@ -969,7 +975,7 @@ shinyModule <- function(input, output, session, data) {
       
       td <- tempfile("tracks_html_"); dir.create(td)
       for (id in s$animals) {
-        out <- file.path(td, paste0(id, "_", Sys.Date(), ".html"))
+        out <- file.path(td, paste0(safe_file_id(id), "_", Sys.Date(), ".html"))
         save_leaflet_html(leaflet_map(track_id = id), out, selfcontained = TRUE)
       }
       zip::zipr(zipfile = file, files = list.files(td, full.names = TRUE))
@@ -1042,7 +1048,7 @@ shinyModule <- function(input, output, session, data) {
       
       td <- tempfile("tracks_png_"); dir.create(td)
       for (id in s$animals) {
-        out <- file.path(td, paste0(id, "_", Sys.Date(), ".png"))
+        out <- file.path(td, paste0(safe_file_id(id), "_", Sys.Date(), ".png"))
         save_leaflet_png(leaflet_map(track_id = id), out)
       }
       zip::zipr(zipfile = file, files = list.files(td, full.names = TRUE))
