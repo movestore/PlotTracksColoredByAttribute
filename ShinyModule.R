@@ -18,84 +18,75 @@ library(units)
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+# A numeric attribute with more than this many distinct values is treated as
+# continuous, everywhere in the app. The NOTE shown in the sidebar is built from
+# the same constant so the two cannot drift apart.
+ATTR_CAT_THRESHOLD <- 12
+
 ########### helpers ###########
 # helper 1: Attribute type
-continuous_attr <- function(vals, threshold = 12) {
+continuous_attr <- function(vals, threshold = ATTR_CAT_THRESHOLD) {
   is_num <- is.numeric(vals) || inherits(vals, "units")
   if (!is_num) return(FALSE)
   n_unique <- length(unique(stats::na.omit(as.numeric(vals))))
   n_unique > threshold
 }
 
-## helper2: making segments with one attribute
-make_segments_1attr <- function(tracks, attr_name, threshold = 12) {
-  if (nrow(tracks) < 2) {
-    return(sf::st_sf(
-      track_id = character(0),
-      value = character(0),
-      geometry = sf::st_sfc(crs = sf::st_crs(tracks))
-    ))
-  }
-  
-  segs <- mt_segments(tracks)
-  id   <- as.character(mt_track_id(tracks))
-  vals <- sf::st_drop_geometry(tracks)[[attr_name]]
-  
-  same_track_next <- c(id[-length(id)] == id[-1], FALSE)
-  if (!any(same_track_next)) {
-    return(sf::st_sf(
-      track_id = character(0),
-      value = character(0),
-      geometry = sf::st_sfc(crs = sf::st_crs(tracks))
-    ))
-  }
-  
-  if (continuous_attr(vals, threshold)) {
-    v <- as.numeric(if (inherits(vals, "units")) units::drop_units(vals) else vals)
-    seg_val <- rowMeans(cbind(v[same_track_next], v[which(same_track_next) + 1]), na.rm = TRUE)
-    seg_val[is.nan(seg_val)] <- NA_real_
-  } else {
-    seg_val <- as.character(vals[same_track_next])
-  }
-  
-  seg_track <- id[which(same_track_next)]
-  sf::st_sf(track_id = seg_track, value = seg_val, geometry = segs[same_track_next])
+## helper 2: the sf skeleton returned when there is nothing to draw
+empty_segs <- function(tracks, values) {
+  do.call(sf::st_sf, c(list(track_id = character(0)), values,
+                       list(geometry = sf::st_sfc(crs = sf::st_crs(tracks)))))
 }
 
-## helper3: making segments with two attributes
+## helper 2a: TRUE at every event that starts a segment, i.e. whose successor
+## belongs to the same track.
+segment_starts <- function(tracks) {
+  id <- as.character(mt_track_id(tracks))
+  c(id[-length(id)] == id[-1], FALSE)
+}
+
+## helper 2b: the value each segment carries. A continuous attribute is averaged
+## over the two events the segment joins; a categorical one takes the value of
+## the event it starts at.
+segment_values <- function(vals, starts, continuous) {
+  if (!continuous) return(as.character(vals[starts]))
+  v   <- as.numeric(if (inherits(vals, "units")) units::drop_units(vals) else vals)
+  out <- rowMeans(cbind(v[starts], v[which(starts) + 1]), na.rm = TRUE)
+  out[is.nan(out)] <- NA_real_
+  out
+}
+
+## helper 3: making segments with one attribute
+make_segments_1attr <- function(tracks, attr_name, threshold = ATTR_CAT_THRESHOLD) {
+  shape <- list(value = character(0))
+  if (nrow(tracks) < 2) return(empty_segs(tracks, shape))
+
+  starts <- segment_starts(tracks)
+  if (!any(starts)) return(empty_segs(tracks, shape))
+
+  vals <- sf::st_drop_geometry(tracks)[[attr_name]]
+  sf::st_sf(
+    track_id = as.character(mt_track_id(tracks))[which(starts)],
+    value    = segment_values(vals, starts, continuous_attr(vals, threshold)),
+    geometry = mt_segments(tracks)[starts]
+  )
+}
+
+## helper 3a: making segments with two attributes
 make_segments_2attr <- function(tracks, cat_name, cont_name) {
-  if (nrow(tracks) < 2) {
-    return(sf::st_sf(
-      track_id = character(0),
-      cat = character(0),
-      cont = numeric(0),
-      geometry = sf::st_sfc(crs = sf::st_crs(tracks))
-    ))
-  }
-  
-  segs <- mt_segments(tracks)
-  id   <- as.character(mt_track_id(tracks))
-  dd   <- sf::st_drop_geometry(tracks)
-  
-  catv <- as.character(dd[[cat_name]])
-  cv   <- if (inherits(dd[[cont_name]], "units")) units::drop_units(dd[[cont_name]]) else as.numeric(dd[[cont_name]])
-  
-  same_track_next <- c(id[-length(id)] == id[-1], FALSE)
-  if (!any(same_track_next)) {
-    return(sf::st_sf(
-      track_id = character(0),
-      cat = character(0),
-      cont = numeric(0),
-      geometry = sf::st_sfc(crs = sf::st_crs(tracks))
-    ))
-  }
-  
-  seg_cat  <- catv[same_track_next]
-  seg_cont <- rowMeans(cbind(cv[same_track_next], cv[which(same_track_next) + 1]), na.rm = TRUE)
-  seg_cont[is.nan(seg_cont)] <- NA_real_
-  
-  seg_track <- id[which(same_track_next)]
-  sf::st_sf(track_id = seg_track, cat = seg_cat, cont = seg_cont, geometry = segs[same_track_next])
+  shape <- list(cat = character(0), cont = numeric(0))
+  if (nrow(tracks) < 2) return(empty_segs(tracks, shape))
+
+  starts <- segment_starts(tracks)
+  if (!any(starts)) return(empty_segs(tracks, shape))
+
+  dd <- sf::st_drop_geometry(tracks)
+  sf::st_sf(
+    track_id = as.character(mt_track_id(tracks))[which(starts)],
+    cat      = segment_values(dd[[cat_name]],  starts, continuous = FALSE),
+    cont     = segment_values(dd[[cont_name]], starts, continuous = TRUE),
+    geometry = mt_segments(tracks)[starts]
+  )
 }
 
 ## helper 4:  generate HCL colors
@@ -155,45 +146,41 @@ as_event <- function(mv, attr_names) {
 # works - including ids with spaces - keeps exactly the file name it has today.
 safe_file_id <- function(x) gsub("[/\\\\]", "_", as.character(x))
 
-# helper 8: get available attribute names directly from event + track data
+# helper 8: names of columns usable as colouring attributes. Drops all-NA
+# columns, timestamps and geometry. st_drop_geometry() only removes the *active*
+# geometry, so any further sfc column has to be excluded explicitly or it would
+# be offered and coloured by its WKT string.
+usable_attr_names <- function(df) {
+  if (is.null(df) || !ncol(df)) return(character(0))
+  keep <- colSums(!is.na(df)) > 0
+  for (cls in c("POSIXt", "Date", "sfc")) {
+    keep <- keep & !vapply(df, inherits, logical(1), what = cls)
+  }
+  names(df)[keep]
+}
+
+# helper 8a: available attribute names from event + track data
 get_attr_choices <- function(mv) {
-  event_df <- sf::st_drop_geometry(mv) |> as.data.frame()
-  event_choices <- character(0)
-  
-  if (ncol(event_df) > 0) {
-    keep_ev <- colSums(!is.na(event_df)) > 0
-    keep_ev <- keep_ev & !vapply(event_df, inherits, logical(1), what = "POSIXt")
-    keep_ev <- keep_ev & !vapply(event_df, inherits, logical(1), what = "Date")
-    # st_drop_geometry() only drops the *active* geometry column, so any further
-    # sfc column would otherwise be offered and coloured by its WKT string.
-    keep_ev <- keep_ev & !vapply(event_df, inherits, logical(1), what = "sfc")
-    event_choices <- names(event_df)[keep_ev]
-  }
-  
-  td <- mt_track_data(mv)
-  track_choices <- character(0)
-  
-  if (!is.null(td) && ncol(td) > 0) {
-    keep_td <- colSums(!is.na(td)) > 0
-    keep_td <- keep_td & !vapply(td, inherits, logical(1), what = "POSIXt")
-    keep_td <- keep_td & !vapply(td, inherits, logical(1), what = "Date")
-    keep_td <- keep_td & !vapply(td, inherits, logical(1), what = "sfc")
-    track_choices <- setdiff(names(td)[keep_td], event_choices)
-  }
-  
+  event_choices <- usable_attr_names(as.data.frame(sf::st_drop_geometry(mv)))
+  track_choices <- setdiff(usable_attr_names(mt_track_data(mv)), event_choices)
   sort(unique(c(event_choices, track_choices)))
 }
 
-# helper 9: split attributes into all,cat,cont without converting all track attrs
-split_attr_choices <- function(mv, threshold = 12) {
-  all_names <- get_attr_choices(mv)
+# helper 9: split attributes into all/cat/cont without converting all track attrs.
+# Reads the event and track tables once and reuses them for both the name filter
+# and the continuous/categorical test.
+split_attr_choices <- function(mv, threshold = ATTR_CAT_THRESHOLD) {
+  event_df <- as.data.frame(sf::st_drop_geometry(mv))
+  td       <- mt_track_data(mv)
+
+  event_choices <- usable_attr_names(event_df)
+  track_choices <- setdiff(usable_attr_names(td), event_choices)
+  all_names     <- sort(unique(c(event_choices, track_choices)))
+
   if (!length(all_names)) {
     return(list(all = character(0), cat = character(0), cont = character(0)))
   }
-  
-  event_df <- sf::st_drop_geometry(mv) |> as.data.frame()
-  td <- mt_track_data(mv)
-  
+
   is_cont <- vapply(all_names, function(nm) {
     if (nm %in% names(event_df)) {
       continuous_attr(event_df[[nm]], threshold = threshold)
@@ -203,8 +190,20 @@ split_attr_choices <- function(mv, threshold = 12) {
       FALSE
     }
   }, logical(1))
-  
+
   list( all  = all_names, cat  = all_names[!is_cont], cont = all_names[ is_cont])
+}
+
+# helper 11: colours for a set of categorical levels, named by level. Used for
+# both colouring options, which is why the palette spans every level in the full
+# data rather than only the ones currently on screen.
+build_cat_palette <- function(levels, palette_name) {
+  n     <- length(levels)
+  pname <- palette_name %||% "Glasbey"
+  base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
+  else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
+  cols  <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
+  stats::setNames(cols, levels)
 }
 
 # helper 10: get one attribute from its original source
@@ -218,6 +217,41 @@ get_attr_values <- function(mv, attr_name) {
   if (!is.null(td) && attr_name %in% names(td)) return(td[[attr_name]])
   
   NULL
+}
+
+# helper 12: the continuous gradient legend drawn in the map's top-right corner.
+# Shared by both colouring options; they differ only in the title, the range and
+# the two colours the bar runs between.
+cont_gradient_legend <- function(title, mn, mx, col_from, col_to) {
+  ticks_all <- pretty(c(mn, mx), n = 5)
+  inner     <- ticks_all[ticks_all > mn & ticks_all < mx]
+  inner3    <- if (length(inner) >= 3) {
+    inner[round(seq(1, length(inner), length.out = 3))]
+  } else {
+    seq(mn, mx, length.out = 5)[2:4]
+  }
+
+  tags$div(
+    class = "continious-legend",
+    style = "background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:4px;font-size:11px;",
+    tags$div(htmlEscape(title), style = "font-weight:600;margin-bottom:4px;"),
+    tags$div(style = paste0(
+      "width:220px;height:12px;background:linear-gradient(to right,",
+      col_from, ",", col_to,
+      ");border:1px solid rgba(0,0,0,0.25);margin-bottom:6px;"
+    )),
+    tags$div(style = "display:flex;justify-content:space-between;width:220px;opacity:0.9;",
+             tags$span(sprintf("%g", mn)),
+             tags$span(sprintf("%g", inner3[1])),
+             tags$span(sprintf("%g", inner3[2])),
+             tags$span(sprintf("%g", inner3[3])),
+             tags$span(sprintf("%g", mx))),
+    tags$div(style = "display:flex;justify-content:space-between;width:220px;opacity:0.7;",
+             tags$span("min"), tags$span(""), tags$span(""), tags$span(""), tags$span("max")),
+    tags$div(style = "margin-top:6px;display:flex;align-items:center;gap:6px;opacity:0.85;",
+             tags$span(style = "display:inline-block;width:12px;height:12px;background:#BDBDBD;border:1px solid rgba(0,0,0,0.25);"),
+             tags$span("no data (NA)"))
+  )
 }
 
 ############### UI #################################
@@ -255,7 +289,8 @@ shinyModuleUserInterface <- function(id, label = NULL) {
           uiOutput(ns("attr_1_ui")),
           uiOutput(ns("ui_color_controls_opt1")),
           div(tags$small(
-            "NOTE: Numeric attributes with fewer than 12 unique values are considered as categorical.",
+            paste0("NOTE: Numeric attributes with fewer than ", ATTR_CAT_THRESHOLD,
+                   " unique values are considered as categorical."),
             style = "color: darkblue;"
           )),
           div(tags$small(
@@ -283,7 +318,8 @@ shinyModuleUserInterface <- function(id, label = NULL) {
             ))
           ),
           div(tags$small(
-            "NOTE: Numeric attributes with fewer than 12 unique values are considered as categorical.",
+            paste0("NOTE: Numeric attributes with fewer than ", ATTR_CAT_THRESHOLD,
+                   " unique values are considered as categorical."),
             style = "color: darkblue;"
           )),
           div(tags$small(
@@ -380,7 +416,7 @@ shinyModule <- function(input, output, session, data) {
   ####
   
   #attribute choices and classification
-  attr_info_all <- reactive({ split_attr_choices(mv_all(), threshold = 12)  })
+  attr_info_all <- reactive({ split_attr_choices(mv_all(), threshold = ATTR_CAT_THRESHOLD)  })
   
   attr_choices_all <- reactive({attr_info_all()$all })
   
@@ -397,30 +433,26 @@ shinyModule <- function(input, output, session, data) {
     checkboxGroupInput(ns("animals"), NULL, choices = ids, selected = sel)
   })
   ##################
+  # One select for each attribute picker: keep the restored value when it is
+  # still among the choices, otherwise fall back to the first one.
+  attr_select_ui <- function(id, label, choices) {
+    restored <- isolate(input[[id]])
+    sel <- if (!is.null(restored) && restored %in% choices) restored else if (length(choices)) choices[1] else NULL
+    selectInput(ns(id), label, choices = choices, selected = sel)
+  }
+
   output$attr_1_ui <- renderUI({
-    ch <- attr_choices_all()
-    restored <- isolate(input$attr_1)
-    sel <- if (!is.null(restored) && restored %in% ch) restored else if (length(ch)) ch[1] else NULL
-    
-    selectInput(ns("attr_1"), NULL, choices = ch, selected = sel)
+    attr_select_ui("attr_1", NULL, attr_choices_all())
   })
-  
+
   output$cat_attr_2_ui <- renderUI({
-    ch <- cat_cont_choices()$cat
-    restored <- isolate(input$cat_attr_2)
-    sel <- if (!is.null(restored) && restored %in% ch) restored else if (length(ch)) ch[1] else NULL
-    
-    selectInput(ns("cat_attr_2"), "Categorical Attribute", choices = ch, selected = sel)
+    attr_select_ui("cat_attr_2", "Categorical Attribute", cat_cont_choices()$cat)
   })
-  
+
   output$cont_attr_2_ui <- renderUI({
-    ch <- cat_cont_choices()$cont
-    restored <- isolate(input$cont_attr_2)
-    sel <- if (!is.null(restored) && restored %in% ch) restored else if (length(ch)) ch[1] else NULL
-    
-    selectInput(ns("cont_attr_2"), "Continuous Attribute", choices = ch, selected = sel)
+    attr_select_ui("cont_attr_2", "Continuous Attribute", cat_cont_choices()$cont)
   })
-  
+
   observeEvent(input$select_all_animals, {
     ids <- as.character(unique(mt_track_id(mv_all())))
     updateCheckboxGroupInput(session, "animals", selected = ids)
@@ -451,7 +483,7 @@ shinyModule <- function(input, output, session, data) {
     vals <- get_attr_values(mv, input$attr_1)
     if (is.null(vals)) return(list(empty = TRUE, is_cont = TRUE))
     
-    list(empty = FALSE, is_cont = continuous_attr(vals, threshold = 12))
+    list(empty = FALSE, is_cont = continuous_attr(vals, threshold = ATTR_CAT_THRESHOLD))
   })
   
   ############################
@@ -468,7 +500,7 @@ shinyModule <- function(input, output, session, data) {
       vals_tmp <- get_attr_values(mv_tmp, input$attr_1)
       req(!is.null(vals_tmp))
       
-      if (continuous_attr(vals_tmp, threshold = 12)) {
+      if (continuous_attr(vals_tmp, threshold = ATTR_CAT_THRESHOLD)) {
         req(input$col_low_1, input$col_high_1)
       } else {
         req(input$cat_pal_1)
@@ -504,14 +536,14 @@ shinyModule <- function(input, output, session, data) {
       tagList(
         h4("Colors"),
         fluidRow(
-          column(6, colourpicker::colourInput(ns("col_low_1"), "Low", if (is.null(isolate(input$col_low_1))) "yellow" else isolate(input$col_low_1) )),
-          column(6, colourpicker::colourInput(ns("col_high_1"), "High", if (is.null(isolate(input$col_high_1))) "blue" else isolate(input$col_high_1)  ))
+          column(6, colourpicker::colourInput(ns("col_low_1"), "Low", isolate(input$col_low_1) %||% "yellow")),
+          column(6, colourpicker::colourInput(ns("col_high_1"), "High", isolate(input$col_high_1) %||% "blue"))
         )
       )
     } else {
       tagList(
         h4("Colors"),
-        selectInput(ns("cat_pal_1"), "Palette*",choices  = c("Glasbey", "Set2", "Set3", "Dark2", "Paired", "Accent"),selected = if (is.null(isolate(input$cat_pal_1))) "Glasbey" else isolate(input$cat_pal_1) )
+        selectInput(ns("cat_pal_1"), "Palette*",choices  = c("Glasbey", "Set2", "Set3", "Dark2", "Paired", "Accent"),selected = isolate(input$cat_pal_1) %||% "Glasbey")
       )
     }
   })
@@ -560,15 +592,23 @@ shinyModule <- function(input, output, session, data) {
     if (identical(s$attr_mode, "Option 1: Color by 1 attribute")) {
       req(s$attr_1)
       mv0  <- mv_attr1()
-      segs <- make_segments_1attr(mv0, s$attr_1, threshold = 12)
+      segs <- make_segments_1attr(mv0, s$attr_1, threshold = ATTR_CAT_THRESHOLD)
       shiny::validate(shiny::need(nrow(segs) > 0, "No segments for selected animals."))
       
       vals <- segs$value
-      is_cont <- continuous_attr(get_attr_values(mv0, s$attr_1), threshold = 12)
+      # Classify from the raw attribute -- the same source make_segments_1attr()
+      # branches on -- rather than re-deriving from the segment values. A
+      # categorical attribute is safe either way (its segment values are
+      # character, which continuous_attr() always calls FALSE), but averaging
+      # consecutive events can change the unique-value count in the other
+      # direction: >12 distinct raw values whose pairwise means collapse to <=12
+      # would be built as continuous segments and then coloured categorically,
+      # with col_low_1/col_high_1 never rendered and so NULL.
+      is_cont <- continuous_attr(get_attr_values(mv0, s$attr_1), threshold = ATTR_CAT_THRESHOLD)
       
       if (is_cont) {
-        low  <- if (is.null(s$col_low_1))  "yellow" else s$col_low_1
-        high <- if (is.null(s$col_high_1)) "blue"   else s$col_high_1
+        low  <- s$col_low_1  %||% "yellow"
+        high <- s$col_high_1 %||% "blue"
         
         mv_full <- as_event(data, s$attr_1)
         orig_vals <- sf::st_drop_geometry(mv_full)[[s$attr_1]]
@@ -588,13 +628,8 @@ shinyModule <- function(input, output, session, data) {
         levs_all  <- sort(unique(c(levs_all, levs)))
         if (!length(levs_all)) levs_all <- levs
         
-        n     <- length(levs_all)
-        pname <- if (is.null(s$cat_pal_1)) "Glasbey" else s$cat_pal_1
-        base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
-        else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
-        cols_all <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
-        names(cols_all) <- levs_all
-        pal   <- colorFactor(unname(cols_all), domain = levs_all, na.color = NA)
+        cols_all <- build_cat_palette(levs_all, s$cat_pal_1)
+        pal      <- colorFactor(unname(cols_all), domain = levs_all, na.color = NA)
         list(mode = 1, segs = segs, is_cont = FALSE, pal = pal,
              legend_vals = levs, cols = unname(cols_all[levs]), title = s$attr_1)
       }
@@ -610,12 +645,7 @@ shinyModule <- function(input, output, session, data) {
       levs_all  <- sort(unique(c(sort(unique(stats::na.omit(as.character(cat_full)))), levs)))
       if (!length(levs_all)) levs_all <- levs
       
-      n     <- length(levs_all)
-      pname <- if (is.null(s$cat_pal_2)) "Glasbey" else s$cat_pal_2
-      base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
-      else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
-      cols_base <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
-      names(cols_base) <- levs_all
+      cols_base <- build_cat_palette(levs_all, s$cat_pal_2)
       
       v_all <- segs$cont
       v_fin <- v_all[is.finite(v_all)]
@@ -784,41 +814,12 @@ shinyModule <- function(input, output, session, data) {
         if (!length(vals)) vals <- sp$legend_vals
         
         mn <- min(vals); mx <- max(vals)
-        ticks_all <- pretty(c(mn, mx), n = 5)
-        inner <- ticks_all[ticks_all > mn & ticks_all < mx]
-        if (length(inner) >= 3) {
-          idx <- round(seq(1, length(inner), length.out = 3))
-          inner3 <- inner[idx]
-        } else {
-          inner3 <- seq(mn, mx, length.out = 5)[2:4]
-        }
-        t1 <- inner3[1]; t2 <- inner3[2]; t3 <- inner3[3]
-        
+
         orig_vals <- sf::st_drop_geometry(mv_legend)[[sp$title]]
         unit_str  <- if (inherits(orig_vals, "units")) units::deparse_unit(orig_vals) else NULL
         title_txt <- if (!is.null(unit_str) && nzchar(unit_str)) paste0(sp$title, " (", unit_str, ")") else sp$title
-        
-        grad <- tags$div(
-          class = "continious-legend",
-          style = "background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:4px;font-size:11px;",
-          tags$div(htmlEscape(title_txt), style = "font-weight:600;margin-bottom:4px;"),
-          tags$div(style = paste0(
-            "width:220px;height:12px;background:linear-gradient(to right,",
-            sp$pal(mn), ",", sp$pal(mx),
-            ");border:1px solid rgba(0,0,0,0.25);margin-bottom:6px;"
-          )),
-          tags$div(style = "display:flex;justify-content:space-between;width:220px;opacity:0.9;",
-                   tags$span(sprintf("%g", mn)),
-                   tags$span(sprintf("%g", t1)),
-                   tags$span(sprintf("%g", t2)),
-                   tags$span(sprintf("%g", t3)),
-                   tags$span(sprintf("%g", mx))),
-          tags$div(style = "display:flex;justify-content:space-between;width:220px;opacity:0.7;",
-                   tags$span("min"), tags$span(""), tags$span(""), tags$span(""), tags$span("max")),
-          tags$div(style = "margin-top:6px;display:flex;align-items:center;gap:6px;opacity:0.85;",
-                   tags$span(style = "display:inline-block;width:12px;height:12px;background:#BDBDBD;border:1px solid rgba(0,0,0,0.25);"),
-                   tags$span("no data (NA)"))
-        )
+
+        grad <- cont_gradient_legend(title_txt, mn, mx, sp$pal(mn), sp$pal(mx))
         m <- leaflet::addControl(m, html = as.character(grad), position = "topright")
       } else {
         m <- add_cat_legend(m, title = sp$title, labels = sp$legend_vals, colors = sp$cols, position = "topright", group = "Categorical_Legend")
@@ -832,41 +833,15 @@ shinyModule <- function(input, output, session, data) {
       
       rng <- sp$cont_range
       mn <- rng[1]; mx <- rng[2]
-      
-      ticks_all <- pretty(c(mn, mx), n = 5)
-      inner <- ticks_all[ticks_all > mn & ticks_all < mx]
-      if (length(inner) >= 3) {
-        idx <- round(seq(1, length(inner), length.out = 3))
-        inner3 <- inner[idx]
-      } else {
-        inner3 <- seq(mn, mx, length.out = 5)[2:4]
-      }
-      t1 <- inner3[1]; t2 <- inner3[2]; t3 <- inner3[3]
-      
-      g1 <- if (identical(sp$title_cont, paste0(s$cont_attr_2, " (Light to Dark)"))) "white" else "black"
-      g2 <- if (identical(sp$title_cont, paste0(s$cont_attr_2, " (Light to Dark)"))) "black" else "white"
-      
-      grad2 <- tags$div(
-        class = "continious-legend",
-        style = "background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:4px;font-size:11px;",
-        tags$div(htmltools::htmlEscape(sp$title_cont), style = "font-weight:600;margin-bottom:4px;"),
-        tags$div(style = paste0(
-          "width:220px;height:12px;background:linear-gradient(to right,",
-          g1, ",", g2,
-          ");border:1px solid rgba(0,0,0,0.25);margin-bottom:6px;"
-        )),
-        tags$div(style = "display:flex;justify-content:space-between;width:220px;opacity:0.9;",
-                 tags$span(sprintf("%g", mn)),
-                 tags$span(sprintf("%g", t1)),
-                 tags$span(sprintf("%g", t2)),
-                 tags$span(sprintf("%g", t3)),
-                 tags$span(sprintf("%g", mx))),
-        tags$div(style = "display:flex;justify-content:space-between;width:220px;opacity:0.7;",
-                 tags$span("min"), tags$span(""), tags$span(""), tags$span(""), tags$span("max")),
-        tags$div(style = "margin-top:6px;display:flex;align-items:center;gap:6px;opacity:0.85;",
-                 tags$span(style = "display:inline-block;width:12px;height:12px;background:#BDBDBD;border:1px solid rgba(0,0,0,0.25);"),
-                 tags$span("no data (NA)"))
-      )
+
+      # The bar shows the shading direction, so it runs white -> black for
+      # "Light to Dark" and the other way round otherwise. Read the direction
+      # from the setting itself rather than by re-parsing the legend title.
+      light_to_dark <- identical(s$cont_pal_2, "Light to Dark")
+      g1 <- if (light_to_dark) "white" else "black"
+      g2 <- if (light_to_dark) "black" else "white"
+
+      grad2 <- cont_gradient_legend(sp$title_cont, mn, mx, g1, g2)
       m <- leaflet::addControl(m, html = as.character(grad2), position = "topright")
     }
     
@@ -944,9 +919,11 @@ shinyModule <- function(input, output, session, data) {
       value = paste(input$animals %||% character(0), collapse = ",")
     )
   }, ignoreInit = TRUE)
-  observe({ updateTextInput(session, "attr_1_json", value = input$attr_1 %||% "")  })
-  observe({updateTextInput(session, "cat_attr_2_json", value = input$cat_attr_2 %||% "")})
-  observe({ updateTextInput(session, "cont_attr_2_json", value = input$cont_attr_2 %||% "") })
+  json_mirrors <- c(attr_1 = "attr_1_json", cat_attr_2 = "cat_attr_2_json",
+                    cont_attr_2 = "cont_attr_2_json")
+  lapply(names(json_mirrors), function(src) {
+    observe({ updateTextInput(session, json_mirrors[[src]], value = input[[src]] %||% "") })
+  })
   ############################################################################
   
   # Downloads
