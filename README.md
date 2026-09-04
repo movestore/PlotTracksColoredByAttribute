@@ -4,6 +4,10 @@ MoveApps
 
 Github repository: github.com/movestore/PlotTracksColoredByAttribute
 
+<p align="center">
+  <img src="screenshot_UI.png" width="600">
+</p>
+
 ## Description
 Each segment of the plotted track(s) can be colored by the values of any of the available attributes associated to the locations or tracks. One or two attributes can be chosen. Individuals can be displayed on separate panels, or all in one.
 
@@ -17,6 +21,12 @@ This is an interactive App (shiny UI) to display and color the tracks on an inte
 - "Add columns color hex and legend in the returned data": if checked the columns `color_hex`, `attribute name(s)` will be added to the data. If e.g. the attributes 'sex' and 'speed' where selected, the column added will be named `sex-speed` and will contain the values of each attribute separated by `-`. This might be useful to e.g. recreate the plot outside of MoveApps
 
 The created plot can than be saved locally as HTML or PNG via `Save Map as HTML` and `Save Map as PNG` buttons.
+
+- Colors available in the different palettes:  
+<p align="left">
+  <img src="palettes.png" width="600">
+</p> 
+ 
  
 ### Application scope
 #### Generality of App usability
@@ -52,7 +62,7 @@ Plots_PNG_xx.zip : representing map and plot as zip folder containing different 
  **`Option 1`**:  
  Select the attribute from the drop down list. Attributes can be continous and categorical.  
     -if attribute is continuous: `Colors`: select the `Low` and `High` color from gradient.  
-    -if attribute is categorical : `Colors` :select the pallete from the dropdown.
+    -if attribute is categorical : `Colors` :select the palette from the dropdown.
     *note 1: numeric attributes with fewer than 12 unique values are treated as categorical.  
     Note 1: For categorical attributes with many levels, the app automatically generates additional color tones to distinguish them more clearly.
     
@@ -73,9 +83,9 @@ user can customize the style of plot lines: `Line width`  & `Transparency`
 
 Check box `Add columns color hex and attribute name(s) in the returned data`:  
 The App adds three columns to the returned move2 object:      
-track_id : the track identifier;      
-color_hex : the hex code used to draw each point/segment;      
-'attribute name(s)' : when `option 1` is selected, this column will be called 'color_legend_xx' being xx the name of the selected attribute, and containing the values of this attribute. When `option 2` is selected, this column will be called 'attr1-attr2' ie the name of both attributes separated by `-`, and will contain the values of both attributes separated by `-`.
+- track_id : the track identifier;      
+- color_hex : the hex code used to draw each point/segment;      
+- 'attribute name(s)' : when `option 1` is selected, this column will be called 'color_legend_xx' being xx the name of the selected attribute, and containing the values of this attribute. When `option 2` is selected, this column will be called 'attr1-attr2' ie the name of both attributes separated by `-`, and will contain the values of both attributes separated by `-`.
 
 **"Download"**:
 `Save Map as HTML`: locally downloads the current plot in HTML format.

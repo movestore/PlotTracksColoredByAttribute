@@ -247,11 +247,15 @@ shinyModuleUserInterface <- function(id, label = NULL) {
         conditionalPanel(
           condition = sprintf("input['%s'] == 'Option 1: Color by 1 attribute'", ns("attr_mode")),
           uiOutput(ns("attr_1_ui")),
+          uiOutput(ns("ui_color_controls_opt1")),
           div(tags$small(
-            "Note: Numeric attributes with fewer than 12 unique values are considered as categorical.",
+            "NOTE: Numeric attributes with fewer than 12 unique values are considered as categorical.",
             style = "color: darkblue;"
           )),
-          uiOutput(ns("ui_color_controls_opt1"))
+          div(tags$small(
+            "* For details on colors contained in each palette, see the documentation of this App.",
+            style = "color: darkblue;"
+          ))
         ),
         
         conditionalPanel(
@@ -259,7 +263,7 @@ shinyModuleUserInterface <- function(id, label = NULL) {
           fluidRow(
             column(6, uiOutput(ns("cat_attr_2_ui"))),
             column(6, selectInput(
-              ns("cat_pal_2"), "Palette",
+              ns("cat_pal_2"), "Palette*",
               choices = c("Glasbey", "Set2", "Set3", "Dark2", "Paired", "Accent"),
               selected = "Glasbey"
             ))
@@ -273,7 +277,11 @@ shinyModuleUserInterface <- function(id, label = NULL) {
             ))
           ),
           div(tags$small(
-            "Note: Numeric attributes with fewer than 12 unique values are considered as categorical.",
+            "NOTE: Numeric attributes with fewer than 12 unique values are considered as categorical.",
+            style = "color: darkblue;"
+          )),
+          div(tags$small(
+            "* For details on colors contained in each palette, see the documentation of this App.",
             style = "color: darkblue;"
           ))
         ),
@@ -497,7 +505,7 @@ shinyModule <- function(input, output, session, data) {
     } else {
       tagList(
         h4("Colors"),
-        selectInput(ns("cat_pal_1"), "Palette",choices  = c("Glasbey", "Set2", "Set3", "Dark2", "Paired", "Accent"),selected = if (is.null(isolate(input$cat_pal_1))) "Glasbey" else isolate(input$cat_pal_1) )
+        selectInput(ns("cat_pal_1"), "Palette*",choices  = c("Glasbey", "Set2", "Set3", "Dark2", "Paired", "Accent"),selected = if (is.null(isolate(input$cat_pal_1))) "Glasbey" else isolate(input$cat_pal_1) )
       )
     }
   })
@@ -908,6 +916,7 @@ shinyModule <- function(input, output, session, data) {
     req(s, identical(s$panel_mode, "Multipanel"))
     ids <- s$animals
     if (is.null(ids) || length(ids) == 0) return()
+    
     lapply(seq_along(ids), function(i) {
       local({
         id_loc <- ids[i]
@@ -987,6 +996,20 @@ shinyModule <- function(input, output, session, data) {
     # callr gives chromote its own event loop and avoids the deadlock.
     callr::r(
       function(html_file, png_path, vwidth, vheight, delay) {
+        # chromote does not pass these itself: default_chrome_args() is only
+        # srgb/extensions/mute-audio, and there is no env-var route, so they have
+        # to be set here, in the subprocess, before Chrome is launched. Inside the
+        # MoveApps container Docker caps /dev/shm at 64 MB, so Chrome's renderer
+        # crashes part-way through a large map and chromote reports "Session and
+        # underlying target have been closed". The image cannot raise --shm-size
+        # (MoveApps owns `docker run`), so tell Chrome not to use /dev/shm at all.
+        # --no-sandbox covers the seccomp-blocked user namespace.
+        chromote::set_chrome_args(c(
+          "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+          chromote::default_chrome_args()
+        ))
+        # A cold container can take longer to boot Chrome than chromote's 10s.
+        options(chromote.timeout = 60)
         webshot2::webshot(
           url = html_file, file = png_path,
           vwidth = vwidth, vheight = vheight, cliprect = "viewport", delay = delay
