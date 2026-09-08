@@ -146,6 +146,20 @@ as_event <- function(mv, attr_names) {
 # works - including ids with spaces - keeps exactly the file name it has today.
 safe_file_id <- function(x) gsub("[/\\\\]", "_", as.character(x))
 
+# helper 7c: TRUE for every event that repeats the (track, time) of the event
+# before it. arrange() has already put duplicates next to each other, so a
+# neighbour comparison finds exactly what duplicated(data.frame(id, t)) finds -
+# including its "NA equals NA" behaviour - without building a row-per-event
+# data.frame. 1.19 s -> 0.014 s on a 181k-event study.
+duplicated_sorted <- function(mv) {
+  n <- nrow(mv)
+  if (n < 2) return(rep(FALSE, n))
+  idc    <- as.character(mt_track_id(mv))
+  tt     <- mt_time(mv)
+  same_t <- ((tt[-1] == tt[-n]) %in% TRUE) | (is.na(tt[-1]) & is.na(tt[-n]))
+  c(FALSE, (idc[-1] == idc[-n]) & same_t)
+}
+
 # helper 8: names of columns usable as colouring attributes. Drops all-NA
 # columns, timestamps and geometry. st_drop_geometry() only removes the *active*
 # geometry, so any further sfc column has to be excluded explicitly or it would
@@ -194,17 +208,6 @@ split_attr_choices <- function(mv, threshold = ATTR_CAT_THRESHOLD) {
   list( all  = all_names, cat  = all_names[!is_cont], cont = all_names[ is_cont])
 }
 
-# helper 11: colours for a set of categorical levels, named by level. Used for
-# both colouring options, which is why the palette spans every level in the full
-# data rather than only the ones currently on screen.
-build_cat_palette <- function(levels, palette_name) {
-  n     <- length(levels)
-  pname <- palette_name %||% "Glasbey"
-  base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
-  else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
-  cols  <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
-  stats::setNames(cols, levels)
-}
 
 # helper 10: get one attribute from its original source
 get_attr_values <- function(mv, attr_name) {
@@ -217,6 +220,47 @@ get_attr_values <- function(mv, attr_name) {
   if (!is.null(td) && attr_name %in% names(td)) return(td[[attr_name]])
   
   NULL
+}
+
+# helper 11: colours for a set of categorical levels, named by level. Used for
+# both colouring options, which is why the palette spans every level in the full
+# data rather than only the ones currently on screen.
+build_cat_palette <- function(levels, palette_name) {
+  n     <- length(levels)
+  pname <- palette_name %||% "Glasbey"
+  base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
+  else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
+  cols  <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
+  stats::setNames(cols, levels)
+}
+
+# helper 11a: draw consecutive same-colour segments of a track as a single
+# polyline rather than one per segment. Segments are two-point linestrings in
+# event order, so a run of them shares endpoints and collapses to the first
+# point of each plus the last point of the run. On a 181k-segment study coloured
+# by a per-track attribute this is 204 polylines instead of 180797: the widget
+# builds ~11x faster and the saved HTML drops from 14.3 MB to 2.7 MB. Skipped
+# when it would not pay - a genuinely per-segment continuous attribute - and
+# when any geometry is not a plain two-point segment.
+merge_colour_runs <- function(dseg) {
+  n <- nrow(dseg)
+  if (n < 2) return(dseg)
+
+  key  <- paste0(as.character(dseg$track_id), "\r", as.character(dseg$.col))
+  grp  <- cumsum(c(TRUE, key[-1] != key[-n]))
+  if (grp[n] > n / 2) return(dseg)
+
+  geo <- sf::st_geometry(dseg)
+  if (!all(vapply(geo, function(g) nrow(unclass(g)) == 2L, logical(1)))) return(dseg)
+
+  ix <- split(seq_len(n), grp)
+  merged <- sf::st_sfc(lapply(ix, function(i) {
+    m <- do.call(rbind, lapply(geo[i], function(g) unclass(g)[1, , drop = FALSE]))
+    sf::st_linestring(rbind(m, unclass(geo[[i[length(i)]]])[2, , drop = FALSE]))
+  }), crs = sf::st_crs(dseg))
+
+  first <- vapply(ix, `[`, integer(1), 1L)
+  sf::st_sf(sf::st_drop_geometry(dseg)[first, , drop = FALSE], geometry = merged)
 }
 
 # helper 12: the continuous gradient legend drawn in the map's top-right corner.
@@ -400,7 +444,7 @@ shinyModule <- function(input, output, session, data) {
   mv_all <- reactive({
     base_data() %>%
       arrange(mt_track_id(), mt_time()) %>%
-      { .[!duplicated(data.frame(id = mt_track_id(.), t = mt_time(.))), ] } %>%
+      { .[!duplicated_sorted(.), ] } %>%
       { .[as.character(mt_track_id(.)) %in%
             names(which(table(as.character(mt_track_id(.))) >= 2)), ] }
   })
@@ -575,6 +619,22 @@ shinyModule <- function(input, output, session, data) {
   ##################################
   
   
+  # as_event() over the *full* data is needed twice: segs_and_pal() builds the
+  # categorical palette and the continuous range from every track, not only the
+  # selected ones, and mv_with_colors() colours every row of the returned object.
+  # Compute it once per settings change rather than once per consumer. Note this
+  # is NOT the same as the as_event() calls on locked_mv(), which deliberately
+  # cover the selected tracks only.
+  data_attr1 <- reactive({
+    s <- locked_settings(); req(s, s$attr_1)
+    as_event(data, s$attr_1)
+  })
+
+  data_attr2 <- reactive({
+    s <- locked_settings(); req(s, s$cat_attr_2, s$cont_attr_2)
+    as_event(data, c(s$cat_attr_2, s$cont_attr_2))
+  })
+
   mv_attr1 <- reactive({
     s  <- locked_settings()
     mv <- locked_mv()
@@ -610,7 +670,7 @@ shinyModule <- function(input, output, session, data) {
         low  <- s$col_low_1  %||% "yellow"
         high <- s$col_high_1 %||% "blue"
         
-        mv_full <- as_event(data, s$attr_1)
+        mv_full <- data_attr1()
         orig_vals <- sf::st_drop_geometry(mv_full)[[s$attr_1]]
         all_vals  <- if (inherits(orig_vals, "units")) units::drop_units(orig_vals) else orig_vals
         all_vals  <- as.numeric(all_vals)
@@ -619,9 +679,10 @@ shinyModule <- function(input, output, session, data) {
         
         pal <- colorNumeric(colorRampPalette(c(low, high))(256), domain = rng, na.color = NA)
         
-        list(mode = 1, segs = segs, is_cont = TRUE, pal = pal, legend_vals = rng, title = s$attr_1)
+        list(mode = 1, segs = segs, is_cont = TRUE, pal = pal, legend_vals = rng, title = s$attr_1,
+             track_idx = split(seq_len(nrow(segs)), as.character(segs$track_id)))
       } else {
-        mv_full   <- as_event(data, s$attr_1)
+        mv_full   <- data_attr1()
         vals_full <- sf::st_drop_geometry(mv_full)[[s$attr_1]]
         levs_all  <- sort(unique(stats::na.omit(as.character(vals_full))))
         levs      <- sort(unique(stats::na.omit(as.character(vals))))
@@ -631,7 +692,8 @@ shinyModule <- function(input, output, session, data) {
         cols_all <- build_cat_palette(levs_all, s$cat_pal_1)
         pal      <- colorFactor(unname(cols_all), domain = levs_all, na.color = NA)
         list(mode = 1, segs = segs, is_cont = FALSE, pal = pal,
-             legend_vals = levs, cols = unname(cols_all[levs]), title = s$attr_1)
+             legend_vals = levs, cols = unname(cols_all[levs]), title = s$attr_1,
+             track_idx = split(seq_len(nrow(segs)), as.character(segs$track_id)))
       }
       
     } else { #option2
@@ -640,7 +702,7 @@ shinyModule <- function(input, output, session, data) {
       segs <- make_segments_2attr(mv02, s$cat_attr_2, s$cont_attr_2)
       shiny::validate(shiny::need(nrow(segs) > 0, "No segments for selected animals."))
       
-      cat_full  <- sf::st_drop_geometry(as_event(data, s$cat_attr_2))[[s$cat_attr_2]]
+      cat_full  <- sf::st_drop_geometry(data_attr2())[[s$cat_attr_2]]
       levs      <- sort(unique(stats::na.omit(as.character(segs$cat))))
       levs_all  <- sort(unique(c(sort(unique(stats::na.omit(as.character(cat_full)))), levs)))
       if (!length(levs_all)) levs_all <- levs
@@ -666,7 +728,8 @@ shinyModule <- function(input, output, session, data) {
         legend_levs = levs,
         cont_range = rng,
         title_cat = s$cat_attr_2,
-        title_cont = paste0(s$cont_attr_2, " (", s$cont_pal_2, ")")
+        title_cont = paste0(s$cont_attr_2, " (", s$cont_pal_2, ")"),
+        track_idx = split(seq_len(nrow(segs)), as.character(segs$track_id))
       )
     }
   })
@@ -681,7 +744,7 @@ shinyModule <- function(input, output, session, data) {
     
     # option 1
     if (sp$mode == 1) {
-      mv_use <- as_event(mv, s$attr_1)
+      mv_use <- data_attr1()
       vals0  <- sf::st_drop_geometry(mv_use)[[s$attr_1]]
       numv   <- if (inherits(vals0, "units")) units::drop_units(vals0) else vals0
       
@@ -697,7 +760,7 @@ shinyModule <- function(input, output, session, data) {
       return(mv)
       
     } else { # option 2
-      mv02 <- as_event(mv, c(s$cat_attr_2, s$cont_attr_2))
+      mv02 <- data_attr2()
       dd   <- sf::st_drop_geometry(mv02)
       
       cat_vals  <- dd[[s$cat_attr_2]]
@@ -754,8 +817,12 @@ shinyModule <- function(input, output, session, data) {
     sp <- segs_and_pal()
     req(s, sp)
     
+    # Multipanel renders one map per track, so the rows of each track are looked
+    # up in the index segs_and_pal() built once rather than rescanning all
+    # segments per panel (a full scan x ~200 panels).
+    row_idx <- if (is.null(track_id)) NULL else sp$track_idx[[as.character(track_id)]] %||% integer(0)
     if (!is.null(track_id)) {
-      segs <- sp$segs[sp$segs$track_id == track_id, , drop = FALSE]
+      segs <- sp$segs[row_idx, , drop = FALSE]
       shiny::validate(shiny::need(nrow(segs) > 0, "No data for this animal."))
     } else {
       segs <- sp$segs
@@ -772,10 +839,7 @@ shinyModule <- function(input, output, session, data) {
     } else {  #option2
       dseg <- segs
       pcols <- sp$seg_cols
-      if (!is.null(track_id)) {
-        idx <- sp$segs$track_id == track_id
-        pcols <- pcols[idx]
-      }
+      if (!is.null(track_id)) pcols <- pcols[row_idx]
       dseg$.col <- pcols
     }
     
@@ -804,7 +868,7 @@ shinyModule <- function(input, output, session, data) {
       hideGroup("TopoMap") %>%
       hideGroup("Aerial") %>%
       addScaleBar(position = "topleft") %>%
-      addPolylines(data = dseg,weight = s$linesize, opacity = s$linealpha, color  = ~.col, smoothFactor = 1)
+      addPolylines(data = merge_colour_runs(dseg), weight = s$linesize, opacity = s$linealpha, color  = ~.col, smoothFactor = 1)
     
     if (sp$mode == 1) {
       if (sp$is_cont) {
@@ -961,24 +1025,32 @@ shinyModule <- function(input, output, session, data) {
   
   
   ##save png
-  save_leaflet_png <- function(widget, png_path, vwidth = 1400L, vheight = 900L, delay = 2) {
-    # Render the widget to an HTML file first. selfcontained = FALSE writes the
-    # map plus a sidecar "<name>_files/" dir instead of bundling everything into
-    # one file. The bundling step is the only thing that needs pandoc and is
-    # pointless here: the headless browser loads the local file (and its sidecar)
-    # directly. Using FALSE drops the pandoc dependency for PNG export.
+  # Render a widget to a local HTML file. selfcontained = FALSE writes the map
+  # plus a sidecar "<name>_files/" dir instead of bundling everything into one
+  # file. The bundling step is the only thing that needs pandoc and is pointless
+  # here: the headless browser loads the local file (and its sidecar) directly.
+  # Using FALSE drops the pandoc dependency for PNG export.
+  widget_to_html <- function(widget) {
     html_file <- tempfile(fileext = ".html")
     htmlwidgets::saveWidget(widget, file = html_file, selfcontained = FALSE)
-    html_file <- normalizePath(html_file, winslash = "/", mustWork = TRUE)
+    normalizePath(html_file, winslash = "/", mustWork = TRUE)
+  }
 
-    # webshot2/chromote drive headless Chrome over the SAME global `later` event
-    # loop that Shiny is already running. Calling it directly from a Shiny handler
-    # re-enters that loop and deadlocks: the R process spins at ~100% CPU, the
-    # screenshot never completes, and the download surfaces as a gateway 500 /
-    # "connection prematurely closed". Running it in a separate R process via
-    # callr gives chromote its own event loop and avoids the deadlock.
+  # Screenshot one or more local HTML files.
+  #
+  # webshot2/chromote drive headless Chrome over the SAME global `later` event
+  # loop that Shiny is already running. Calling it directly from a Shiny handler
+  # re-enters that loop and deadlocks: the R process spins at ~100% CPU, the
+  # screenshot never completes, and the download surfaces as a gateway 500 /
+  # "connection prematurely closed". Running it in a separate R process via
+  # callr gives chromote its own event loop and avoids the deadlock.
+  #
+  # Every file is shot inside ONE subprocess, so Chrome starts once no matter how
+  # many panels the multipanel export has. At ~200 tracks that is one browser
+  # launch instead of ~200.
+  webshot_files <- function(html_files, png_paths, vwidth = 1400L, vheight = 900L, delay = 2) {
     callr::r(
-      function(html_file, png_path, vwidth, vheight, delay) {
+      function(html_files, png_paths, vwidth, vheight, delay) {
         # chromote does not pass these itself: default_chrome_args() is only
         # srgb/extensions/mute-audio, and there is no env-var route, so they have
         # to be set here, in the subprocess, before Chrome is launched. Inside the
@@ -993,18 +1065,23 @@ shinyModule <- function(input, output, session, data) {
         ))
         # A cold container can take longer to boot Chrome than chromote's 10s.
         options(chromote.timeout = 60)
-        webshot2::webshot(
-          url = html_file, file = png_path,
-          vwidth = vwidth, vheight = vheight, cliprect = "viewport", delay = delay
-        )
+        for (i in seq_along(html_files)) {
+          webshot2::webshot(
+            url = html_files[i], file = png_paths[i],
+            vwidth = vwidth, vheight = vheight, cliprect = "viewport", delay = delay
+          )
+        }
       },
-      args = list(html_file = html_file, png_path = png_path,
+      args = list(html_files = html_files, png_paths = png_paths,
                   vwidth = vwidth, vheight = vheight, delay = delay)
     )
-
-    png_path
+    png_paths
   }
-  
+
+  save_leaflet_png <- function(widget, png_path, vwidth = 1400L, vheight = 900L, delay = 2) {
+    webshot_files(widget_to_html(widget), png_path, vwidth = vwidth, vheight = vheight, delay = delay)
+  }
+
   output$save_png <- downloadHandler(
     filename = function() {
       s <- locked_settings(); req(s)
@@ -1024,10 +1101,11 @@ shinyModule <- function(input, output, session, data) {
       }
       
       td <- tempfile("tracks_png_"); dir.create(td)
-      for (id in s$animals) {
-        out <- file.path(td, paste0(safe_file_id(id), "_", Sys.Date(), ".png"))
-        save_leaflet_png(leaflet_map(track_id = id), out)
-      }
+      # Write every panel's HTML first, then shoot them all in one subprocess.
+      png_paths  <- file.path(td, paste0(safe_file_id(s$animals), "_", Sys.Date(), ".png"))
+      html_files <- vapply(s$animals, function(id) widget_to_html(leaflet_map(track_id = id)),
+                           character(1), USE.NAMES = FALSE)
+      webshot_files(html_files, png_paths)
       zip::zipr(zipfile = file, files = list.files(td, full.names = TRUE))
     }
   )
