@@ -124,6 +124,19 @@ extend_palette <- function(pal, n, max_shade = 0.5) {
   out
 }
 
+## helper 4a: Web-Mercator y for a latitude, as a fraction of the world square.
+## Used to turn the map's visible bounds into a pixel height.
+merc_y <- function(lat) {
+  lat <- max(min(lat, 85.05112878), -85.05112878)
+  s <- sin(lat * pi / 180)
+  0.5 - log((1 + s) / (1 - s)) / (4 * pi)
+}
+
+## The groups offered by the layers control, in the order leaflet_map() adds
+## them. The first base group is the one leaflet shows by default.
+BASE_GROUPS   <- c("TopoMap", "Aerial", "OpenStreetMap")
+LEGEND_GROUPS <- c("Categorical_Legend", "Continious_Legend")
+
 ## helper 5: legend for categorical attributes
 add_cat_legend <- function(map, title, labels, colors, position = "topright",
                            group = "Categorical_Legend", className = "info legend") {
@@ -891,18 +904,18 @@ shinyModule <- function(input, output, session, data) {
     
     m <- leaflet(options = leafletOptions(minZoom = 2, preferCanvas = TRUE)) %>%
       fitBounds(bb[1], bb[2], bb[3], bb[4]) %>%
-      addTiles(group = "OpenStreetMap") %>%
       addProviderTiles("Esri.WorldTopoMap", group = "TopoMap") %>%
       addProviderTiles("Esri.WorldImagery", group = "Aerial") %>%
+      addTiles(group = "OpenStreetMap") %>%
       addCircleMarkers(lng = cx, lat = cy,radius = 1, stroke = FALSE,opacity = 0, fillOpacity = 0,group = "Continious_Legend", options = pathOptions(interactive = FALSE)) %>%
       addLayersControl(
-        baseGroups = c("OpenStreetMap", "TopoMap", "Aerial"),
+        baseGroups = BASE_GROUPS,
         overlayGroups = overlay_legend,
         position = "topleft",
         options = layersControlOptions(collapsed = FALSE)
       ) %>%
-      hideGroup("TopoMap") %>%
       hideGroup("Aerial") %>%
+      hideGroup("OpenStreetMap") %>%
       addScaleBar(position = "topleft") %>%
       addPolylines(data = merge_colour_runs(dseg), weight = s$linesize, opacity = s$linealpha, color  = ~.col, smoothFactor = 1)
     
@@ -973,6 +986,47 @@ shinyModule <- function(input, output, session, data) {
     m <- htmlwidgets::onRender(m, "
       function(el){
         var map = this;
+        // What the layers control shows has to be reported by hand. leaflet's own
+        // '<id>_groups' input is not usable here: it never refreshes on
+        // baselayerchange, and for these groups getVisibleGroups() stays stale
+        // even after overlayadd/overlayremove - verified in the browser, the
+        // legend leaves the DOM while '_groups' still lists it. The events
+        // themselves do fire, so listen to those. Guarded because the same
+        // widget is also written to standalone HTML, where Shiny does not exist.
+        if (window.Shiny && Shiny.setInputValue) {
+          Shiny.setInputValue(el.id + '_basegroup', 'TopoMap');
+          map.on('baselayerchange', function(e){
+            Shiny.setInputValue(el.id + '_basegroup', e.name);
+          });
+
+          // The screenshot has to be taken at the size the map has on screen,
+          // otherwise the same centre and zoom frames a different area. Deriving
+          // that from the reported bounds is guesswork that breaks on a narrow
+          // panel or one that reports before it has been laid out, so send the
+          // element's real size instead.
+          function reportSize(){
+            Shiny.setInputValue(el.id + '_pxsize', [el.offsetWidth, el.offsetHeight]);
+            // The size a single-panel map would have in this window: the main
+            // panel's width by 85vh, which is what leaflet_map() is given in
+            // single-panel mode. Multipanel panels are exported at this size, and
+            // map_single is not in the DOM then, so every map reports it.
+            var host = el.closest('.col-sm-8') || el.parentElement;
+            Shiny.setInputValue(el.id + '_hostsize',
+              [Math.round(host ? host.clientWidth : el.offsetWidth),
+               Math.round(window.innerHeight * 0.85)]);
+          }
+          reportSize();
+          map.on('resize', reportSize);
+
+          var off = {};
+          function reportOff(){
+            var names = Object.keys(off).filter(function(k){ return off[k]; });
+            Shiny.setInputValue(el.id + '_overlaysoff', names);
+          }
+          map.on('overlayadd',    function(e){ off[e.name] = false; reportOff(); });
+          map.on('overlayremove', function(e){ off[e.name] = true;  reportOff(); });
+          reportOff();
+        }
         function set(on){
           el.querySelectorAll('.continious-legend').forEach(function(n){ n.style.display = on ? '' : 'none'; });
         }
@@ -1086,6 +1140,106 @@ shinyModule <- function(input, output, session, data) {
   
   
   ##save png
+  # A PNG is shot from a freshly rendered widget, so on its own it would always
+  # show the full extent with the default base layer and every legend switched
+  # on - whatever the user is actually looking at. Leaflet reports the live state
+  # of each map back to the server as "<id>_center" / "_zoom" / "_bounds" /
+  # "_groups", so re-apply that here and the file matches the screen. Every panel
+  # of a multipanel has its own id, hence its own zoom, pan and layer choice.
+  apply_live_view <- function(m, map_id, out_size = NULL) {
+    ctr <- input[[paste0(map_id, "_center")]]
+    zm  <- input[[paste0(map_id, "_zoom")]]
+    bb  <- input[[paste0(map_id, "_bounds")]]
+
+    vwidth  <- 1400L
+    vheight <- 900L
+
+    # What the browser says the map measures, when it has said anything sensible.
+    px      <- suppressWarnings(as.integer(input[[paste0(map_id, "_pxsize")]]))
+    have_px <- length(px) == 2L && all(is.finite(px)) &&
+               all(px >= 100L) && all(px <= 5000L)
+    if (have_px) {
+      vwidth  <- px[1]
+      vheight <- px[2]
+    }
+
+    # Fallback for a map that never reported its size: derive it from the visible
+    # bounds. At zoom z the whole world is 256 * 2^z px across.
+    if (!have_px && !is.null(zm) && !is.null(bb)) {
+      world    <- 256 * 2^zm
+      lng_span <- bb$east - bb$west
+      if (lng_span <= 0) lng_span <- lng_span + 360   # view crosses the antimeridian
+      lng_span <- min(lng_span, 360)
+      w <- round(lng_span / 360 * world)
+      h <- round((merc_y(bb$south) - merc_y(bb$north)) * world)
+      if (isTRUE(is.finite(w) && is.finite(h) &&
+                 w >= 100 && h >= 100 && w <= 5000 && h <= 5000)) {
+        vwidth  <- as.integer(w)
+        vheight <- as.integer(h)
+      }
+    }
+
+    # Multipanel only: render the panel at the size a single-panel map would
+    # have, so every exported file is the same size whichever layout produced it.
+    # The canvas grows without the zoom changing would just show more ground, so
+    # take the difference out of the zoom - by the smaller of the two ratios, so
+    # what the panel showed still fits. That lands on a fractional zoom, which
+    # leaflet rounds away unless zoomSnap is 0; it is set on this copy of the
+    # widget only, so the live map keeps its normal stepped zooming.
+    zoom_adj <- 0
+    if (length(out_size) == 2L && all(is.finite(out_size)) &&
+        all(out_size >= 100L) && all(out_size <= 5000L)) {
+      fit <- min(out_size[1] / vwidth, out_size[2] / vheight)
+      if (isTRUE(is.finite(fit) && fit > 0)) {
+        zoom_adj <- log2(fit)
+        vwidth   <- as.integer(out_size[1])
+        vheight  <- as.integer(out_size[2])
+      }
+    }
+
+    if (!is.null(ctr) && !is.null(zm)) {
+      # leaflet.js applies fitBounds *after* setView, so the widget's own
+      # fitBounds has to go or it would override the user's view.
+      m$x$fitBounds <- NULL
+      if (zoom_adj != 0) m$x$options$zoomSnap <- 0
+      m <- m %>% setView(lng = ctr$lng, lat = ctr$lat,
+                         zoom = min(18, zm + zoom_adj))
+    }
+    # With no live view the widget keeps its own fitBounds, which re-fits the data
+    # to whatever canvas it is given: same framing, just more pixels.
+
+    base_live <- input[[paste0(map_id, "_basegroup")]]
+    off       <- as.character(input[[paste0(map_id, "_overlaysoff")]])
+
+    # The base layer needs showGroup, not just hideGroup on the others:
+    # addLayersControl() keeps only the *first* base group when the map is built,
+    # so hiding the rest would leave no background at all.
+    if (!is.null(base_live) && base_live %in% BASE_GROUPS) {
+      m <- m %>% hideGroup(setdiff(BASE_GROUPS, base_live)) %>% showGroup(base_live)
+    }
+
+    if (length(off)) {
+      legends_off <- intersect(LEGEND_GROUPS, off)
+      if (length(legends_off)) m <- m %>% hideGroup(legends_off)
+
+      # The continuous legend is a plain HTML control, not a leaflet layer: it is
+      # shown and hidden by the onRender hook reacting to overlayadd/overlayremove.
+      # Those events do not fire for a group that starts hidden, so switching it
+      # off has to be done directly here.
+      if ("Continious_Legend" %in% off) {
+        m <- htmlwidgets::onRender(m, "
+          function(el){
+            el.querySelectorAll('.continious-legend').forEach(function(n){
+              n.style.display = 'none';
+            });
+          }
+        ")
+      }
+    }
+
+    list(widget = m, vwidth = vwidth, vheight = vheight)
+  }
+
   # Render a widget to a local HTML file. selfcontained = FALSE writes the map
   # plus a sidecar "<name>_files/" dir instead of bundling everything into one
   # file. The bundling step is the only thing that needs pandoc and is pointless
@@ -1110,6 +1264,9 @@ shinyModule <- function(input, output, session, data) {
   # many panels the multipanel export has. At ~200 tracks that is one browser
   # launch instead of ~200.
   webshot_files <- function(html_files, png_paths, vwidth = 1400L, vheight = 900L, delay = 2) {
+    # Each panel can be a different shape on screen, so sizes are per file.
+    vwidth  <- rep_len(vwidth,  length(html_files))
+    vheight <- rep_len(vheight, length(html_files))
     callr::r(
       function(html_files, png_paths, vwidth, vheight, delay) {
         # chromote does not pass these itself: default_chrome_args() is only
@@ -1129,7 +1286,7 @@ shinyModule <- function(input, output, session, data) {
         for (i in seq_along(html_files)) {
           webshot2::webshot(
             url = html_files[i], file = png_paths[i],
-            vwidth = vwidth, vheight = vheight, cliprect = "viewport", delay = delay
+            vwidth = vwidth[i], vheight = vheight[i], cliprect = "viewport", delay = delay
           )
         }
       },
@@ -1156,17 +1313,27 @@ shinyModule <- function(input, output, session, data) {
       s <- locked_settings(); req(s)
       
       if (!identical(s$panel_mode, "Multipanel")) {
-        save_leaflet_png(leaflet_map(), file)
+        v <- apply_live_view(leaflet_map(), "map_single")
+        save_leaflet_png(v$widget, file, vwidth = v$vwidth, vheight = v$vheight)
         shiny::validate(shiny::need(file.exists(file), "PNG export failed."))
         return(invisible())
       }
       
       td <- tempfile("tracks_png_"); dir.create(td)
       # Write every panel's HTML first, then shoot them all in one subprocess.
-      png_paths  <- file.path(td, paste0(safe_file_id(s$animals), "_", Sys.Date(), ".png"))
-      html_files <- vapply(s$animals, function(id) widget_to_html(leaflet_map(track_id = id)),
-                           character(1), USE.NAMES = FALSE)
-      webshot_files(html_files, png_paths)
+      png_paths <- file.path(td, paste0(safe_file_id(s$animals), "_", Sys.Date(), ".png"))
+      # Panel i is rendered into output "map_i" (see maps_ui), so that is the id
+      # whose live zoom, pan and layer choice this panel has to be shot with.
+      views <- lapply(seq_along(s$animals), function(i) {
+        map_id <- paste0("map_", i)
+        apply_live_view(leaflet_map(track_id = s$animals[i]), map_id,
+                        out_size = suppressWarnings(
+                          as.integer(input[[paste0(map_id, "_hostsize")]])))
+      })
+      html_files <- vapply(views, function(v) widget_to_html(v$widget), character(1))
+      webshot_files(html_files, png_paths,
+                    vwidth  = vapply(views, function(v) v$vwidth,  integer(1)),
+                    vheight = vapply(views, function(v) v$vheight, integer(1)))
       zip::zipr(zipfile = file, files = list.files(td, full.names = TRUE))
     }
   )
