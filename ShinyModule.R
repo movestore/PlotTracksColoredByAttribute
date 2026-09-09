@@ -89,23 +89,44 @@ make_segments_2attr <- function(tracks, cat_name, cont_name) {
   )
 }
 
-## helper 4:  generate HCL colors
-color_generator <- function(pal, n, step = NULL) {
-  if (n <= 0) return(character(0))
+## helper 4: stretch a palette to n categories by varying the lightness of its
+## own colours, so the palette the user picked stays recognisable however many
+## categories there are.
+##
+## This replaces an earlier generator that fell back to golden-angle HCL colours
+## as soon as n exceeded the palette size. That fallback ignored `pal` entirely,
+## so every palette produced identical colours once there were more categories
+## than the palette had entries - picking a different palette appeared to do
+## nothing at all.
+##
+## The hue cycles fastest and the shade changes only after every colour of the
+## palette has been used, so neighbouring categories keep clearly different base
+## colours. The first length(pal) categories get the palette exactly as it is.
+extend_palette <- function(pal, n, max_shade = 0.5) {
   m <- length(pal)
-  if (m == 0 || n > m) {
-    golden <- 137.50776405003785
-    hues   <- ((0:(n - 1)) * golden) %% 360
-    return(hcl(h = hues, c = 65, l = 60))
-  }
-  if (is.null(step)) step <- max(3L, as.integer(round(m / 4)))
-  step <- max(1L, as.integer(step))
-  idx  <- ((0:(n - 1)) * step) %% m + 1L
-  pal[idx]
+  if (n <= 0 || m == 0) return(character(0))
+  if (n <= m) return(pal[seq_len(n)])
+
+  k    <- ceiling(n / m)
+  # magnitudes grow from 0, alternating lighter/darker, so shade levels stay as
+  # far apart as possible while the first level is the untouched palette.
+  offs <- seq(0, max_shade, length.out = k) * rep(c(-1, 1), length.out = k)
+
+  idx   <- seq_len(n) - 1L
+  base  <- pal[(idx %% m) + 1L]
+  amt   <- offs[(idx %/% m) + 1L]
+
+  out <- base
+  lighter <- amt < 0
+  darker  <- amt > 0
+  if (any(lighter)) out[lighter] <- colorspace::lighten(base[lighter], amount = -amt[lighter])
+  if (any(darker))  out[darker]  <- colorspace::darken( base[darker],  amount =  amt[darker])
+  out
 }
 
 ## helper 5: legend for categorical attributes
-add_cat_legend <- function(map, title, labels, colors, position = "topright", group = "Categorical_Legend") {
+add_cat_legend <- function(map, title, labels, colors, position = "topright",
+                           group = "Categorical_Legend", className = "info legend") {
   stopifnot(length(labels) == length(colors))
   leaflet::addLegend(
     map,
@@ -114,8 +135,23 @@ add_cat_legend <- function(map, title, labels, colors, position = "topright", gr
     labels = labels,
     title = title,
     opacity = 1,
-    group = group
+    group = group,
+    className = className
   )
+}
+
+## helper 5a: which categories a legend lists, and in which colours. A single
+## panel lists every category drawn on it; each panel of a multipanel lists only
+## the categories that its own track actually shows.
+cat_legend_entries <- function(sp, segs, track_id) {
+  cols <- if (identical(sp$mode, 1)) sp$cat_cols else sp$cat_legend
+  levs <- if (is.null(track_id)) {
+    if (identical(sp$mode, 1)) sp$legend_vals else (sp$legend_levs %||% names(cols))
+  } else {
+    vals <- if (identical(sp$mode, 1)) segs$value else segs$cat
+    sort(unique(stats::na.omit(as.character(vals))))
+  }
+  list(labels = levs, colors = unname(cols[levs]))
 }
 
 # helper 6: shade a base color by weight- for cont in option2
@@ -208,6 +244,17 @@ split_attr_choices <- function(mv, threshold = ATTR_CAT_THRESHOLD) {
   list( all  = all_names, cat  = all_names[!is_cont], cont = all_names[ is_cont])
 }
 
+# helper 11: colours for a set of categorical levels, named by level. Used for
+# both colouring options, which is why the palette spans every level in the full
+# data rather than only the ones currently on screen.
+build_cat_palette <- function(levels, palette_name) {
+  n     <- length(levels)
+  pname <- palette_name %||% "Glasbey"
+  base  <- if (tolower(pname) == "glasbey") pals::glasbey(32)
+  else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
+  cols  <- extend_palette(base, n)
+  stats::setNames(cols, levels)
+}
 
 # helper 10: get one attribute from its original source
 get_attr_values <- function(mv, attr_name) {
@@ -220,18 +267,6 @@ get_attr_values <- function(mv, attr_name) {
   if (!is.null(td) && attr_name %in% names(td)) return(td[[attr_name]])
   
   NULL
-}
-
-# helper 11: colours for a set of categorical levels, named by level. Used for
-# both colouring options, which is why the palette spans every level in the full
-# data rather than only the ones currently on screen.
-build_cat_palette <- function(levels, palette_name) {
-  n     <- length(levels)
-  pname <- palette_name %||% "Glasbey"
-  base  <- if (tolower(pname) == "glasbey") pals::glasbey(max(32, n))
-  else RColorBrewer::brewer.pal(RColorBrewer::brewer.pal.info[pname, "maxcolors"], pname)
-  cols  <- if (n <= length(base)) base[seq_len(n)] else color_generator(base, n)
-  stats::setNames(cols, levels)
 }
 
 # helper 11a: draw consecutive same-colour segments of a track as a single
@@ -692,7 +727,8 @@ shinyModule <- function(input, output, session, data) {
         cols_all <- build_cat_palette(levs_all, s$cat_pal_1)
         pal      <- colorFactor(unname(cols_all), domain = levs_all, na.color = NA)
         list(mode = 1, segs = segs, is_cont = FALSE, pal = pal,
-             legend_vals = levs, cols = unname(cols_all[levs]), title = s$attr_1,
+             legend_vals = levs, cols = unname(cols_all[levs]), cat_cols = cols_all,
+             title = s$attr_1,
              track_idx = split(seq_len(nrow(segs)), as.character(segs$track_id)))
       }
       
@@ -886,14 +922,18 @@ shinyModule <- function(input, output, session, data) {
         grad <- cont_gradient_legend(title_txt, mn, mx, sp$pal(mn), sp$pal(mx))
         m <- leaflet::addControl(m, html = as.character(grad), position = "topright")
       } else {
-        m <- add_cat_legend(m, title = sp$title, labels = sp$legend_vals, colors = sp$cols, position = "topright", group = "Categorical_Legend")
+        leg <- cat_legend_entries(sp, segs, track_id)
+        m <- add_cat_legend(m, title = sp$title, labels = leg$labels, colors = leg$colors,
+                            position = "topright", group = "Categorical_Legend",
+                            className = "info legend cat-legend-scroll")
       }
     } else {
-      leg_levs <- sp$legend_levs %||% names(sp$cat_legend)
+      leg <- cat_legend_entries(sp, segs, track_id)
       m <- add_cat_legend(m, title = sp$title_cat,
-                          labels = leg_levs,
-                          colors = unname(sp$cat_legend[leg_levs]),
-                          position = "topright", group = "Categorical_Legend")
+                          labels = leg$labels,
+                          colors = leg$colors,
+                          position = "topright", group = "Categorical_Legend",
+                          className = "info legend cat-legend-scroll")
       
       rng <- sp$cont_range
       mn <- rng[1]; mx <- rng[2]
@@ -909,6 +949,27 @@ shinyModule <- function(input, output, session, data) {
       m <- leaflet::addControl(m, html = as.character(grad2), position = "topright")
     }
     
+    # A categorical attribute can have hundreds of levels, which would otherwise
+    # run the legend off the map. Capping its height turns it into a scrolling
+    # list; a short legend is unaffected, since max-height only bites once the
+    # content exceeds it. Multipanel panels are roughly half the height of a
+    # single panel, so they get a smaller cap.
+    #
+    # The cap is applied from onRender rather than a prependContent <style>:
+    # prependContent is silently dropped inside a Shiny render call ("Ignoring
+    # prepended content"), so the CSS would only ever have reached the exported
+    # HTML, never the running app. onRender works in both.
+    legend_max_h <- if (identical(s$panel_mode, "Multipanel")) "28vh" else "55vh"
+    m <- htmlwidgets::onRender(m, sprintf("
+      function(el){
+        el.querySelectorAll('.cat-legend-scroll').forEach(function(n){
+          n.style.maxHeight = '%s';
+          n.style.overflowY = 'auto';
+          n.style.overflowX = 'hidden';
+        });
+      }
+    ", legend_max_h))
+
     m <- htmlwidgets::onRender(m, "
       function(el){
         var map = this;
