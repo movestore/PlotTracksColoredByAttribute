@@ -1004,6 +1004,25 @@ shinyModule <- function(input, output, session, data) {
           // that from the reported bounds is guesswork that breaks on a narrow
           // panel or one that reports before it has been laid out, so send the
           // element's real size instead.
+          // Report the view ourselves. leaflet only wires its own
+          // '<id>_center'/'_zoom'/'_bounds' inputs when the element already has
+          // the shiny-bound-output class at render time. The single-panel map
+          // renders before Shiny marks it bound (its class list ends with
+          // shiny-bound-output, and map.id is never set), so that wiring is
+          // skipped and those inputs keep whatever the first fit reported -
+          // which is why a single-panel PNG came out zoomed to the data instead
+          // of to the current view. Multipanel outputs are created later and do
+          // get wired, but reporting here covers both the same way.
+          function reportView(){
+            var c = map.getCenter(), bb = map.getBounds();
+            Shiny.setInputValue(el.id + '_view',
+              [c.lng, c.lat, map.getZoom(),
+               bb.getWest(), bb.getEast(), bb.getSouth(), bb.getNorth()]);
+          }
+          reportView();
+          map.on('moveend', reportView);
+          map.on('zoomend', reportView);
+
           function reportSize(){
             Shiny.setInputValue(el.id + '_pxsize', [el.offsetWidth, el.offsetHeight]);
             // The size a single-panel map would have in this window: the main
@@ -1150,6 +1169,15 @@ shinyModule <- function(input, output, session, data) {
     ctr <- input[[paste0(map_id, "_center")]]
     zm  <- input[[paste0(map_id, "_zoom")]]
     bb  <- input[[paste0(map_id, "_bounds")]]
+
+    # Our own report wins: see the note in the onRender hook, leaflet's inputs are
+    # not wired up for every map.
+    view <- suppressWarnings(as.numeric(input[[paste0(map_id, "_view")]]))
+    if (length(view) == 7L && all(is.finite(view))) {
+      ctr <- list(lng = view[1], lat = view[2])
+      zm  <- view[3]
+      bb  <- list(west = view[4], east = view[5], south = view[6], north = view[7])
+    }
 
     vwidth  <- 1400L
     vheight <- 900L
