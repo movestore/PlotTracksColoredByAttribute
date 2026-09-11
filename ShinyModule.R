@@ -1128,6 +1128,20 @@ shinyModule <- function(input, output, session, data) {
   ##save html
   save_leaflet_html <- function(widget, html_path, selfcontained = TRUE) {
     htmlwidgets::saveWidget(widget, file = html_path, selfcontained = selfcontained)
+
+    # With selfcontained = TRUE pandoc inlines every dependency into the html, so
+    # the "<name>_files" sidecar is dead weight by the time saveWidget() returns.
+    # It tries to delete it itself, but with a path relative to the working
+    # directory, while write_md_for_pandoc() created it next to the html file
+    # (it setwd()s there and restores the wd on exit). Unless those are the same
+    # directory the sidecar survives - and for the multipanel export it was then
+    # zipped up next to the html. Remove it where it actually is.
+    if (isTRUE(selfcontained)) {
+      libdir <- file.path(
+        dirname(html_path),
+        paste0(tools::file_path_sans_ext(basename(html_path)), "_files"))
+      if (dir.exists(libdir)) unlink(libdir, recursive = TRUE)
+    }
     html_path
   }
   
@@ -1153,7 +1167,8 @@ shinyModule <- function(input, output, session, data) {
         out <- file.path(td, paste0(safe_file_id(id), "_", Sys.Date(), ".html"))
         save_leaflet_html(leaflet_map(track_id = id), out, selfcontained = TRUE)
       }
-      zip::zipr(zipfile = file, files = list.files(td, full.names = TRUE))
+      zip::zipr(zipfile = file,
+                files = list.files(td, pattern = "\\.html$", full.names = TRUE))
     }
   )
   
